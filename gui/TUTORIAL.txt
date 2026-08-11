@@ -1,0 +1,533 @@
+================================================================================
+PRT-DeepONet Studio - five worked projects, start to finish
+================================================================================
+Follow one from the top and you end with a trained surrogate and a prediction
+on a structure that was never simulated. Every box below has a value and a
+reason for it.
+
+  PROJECT 1   2D, from scratch                                    ~2 hours
+  PROJECT 2   2D, from somebody else's trained network            ~1 hour
+  PROJECT 3   3D, from scratch                                    ~2 hours
+  PROJECT 4   3D, from data somebody else simulated               varies
+  PROJECT 5   3D with the three switches                          overnight
+
+Read the four short sections first. Everything afterwards refers back to them.
+
+
+================================================================================
+THE SYSTEM
+================================================================================
+Groundwater flows through porous rock. Dissolved acetate and sulfate arrive at
+the upstream face. Sulfate-reducing bacteria in the pore space consume both and
+produce sulfide, which then precipitates on the grain surfaces.
+
+Two reactions, and they are independent settings.
+
+  BIOTIC, in the water, catalysed by bacteria
+
+        Ac  +  0.4 A  ->  P  +  0.04 Bio
+        acetate + sulfate -> sulfide + more bacteria
+
+    The rate is not proportional to the reactants. Bacteria saturate: past a
+    point, more sulfate does not make them work faster. That is the Monod form.
+
+        rate = k * Ac * A/(Ks_A + A) * Bio
+
+    Ks_A is the sulfate concentration at which they run at half speed. The
+    bacteria also die at 0.006 per unit time, fed or not.
+
+  ABIOTIC, purely chemical, no microbes involved and none needed
+
+        Ac  ->  P            rate = k_surf * Ac     (first order)
+
+    One dissolved chemical becomes another, one mole for one. You choose which
+    chemical it consumes and whether it produces the product or is a terminal
+    loss. It can be made to happen only on pore voxels touching a grain, which
+    is what a mineral-surface reaction does.
+
+Each chemical is scaled by its own inlet concentration, so 1.0 means "as
+concentrated as the feed". Acetate arrives at 2.0 mmol/L and sulfate at
+5.0 mmol/L, so the 0.4 above is 2.0/5.0. The 0.04 is the yield.
+
+
+================================================================================
+CHOOSING YOUR CHEMISTRY - the three modes
+================================================================================
+The first decision, and it gates most of the others, is the reaction mode. It
+is the box at the very top of the settings panel.
+
+--------------------------------------------------------------------------------
+BIOTIC ONLY - microbes do everything
+--------------------------------------------------------------------------------
+    The reactions in this run              biotic only
+    How many chemicals                 4        Ac, A, P, Bio
+    Lowest / Highest Damkohler         0.1 / 10
+    Abiotic Damkohler                  not asked for, recorded as 0
+
+Four chemicals because the biotic reaction makes a product and grows biomass,
+and you want both. This is the default and the setting every published figure
+in this project was made with.
+
+--------------------------------------------------------------------------------
+ABIOTIC ONLY - a reaction with no biology in it at all
+--------------------------------------------------------------------------------
+    The reactions in this run              abiotic only
+    How many chemicals                 3        Ac, A, P
+    The abiotic reaction consumes      auto
+    and turns it into                  product
+    Lowest / Highest ABIOTIC Damkohler 0.1 / 10
+
+THREE chemicals, not four. With no microbes there is no biomass, so a fourth
+chemical would be a field of zeros taking a quarter of the network's output
+head. The settings report says so before the run starts.
+
+Leave the reactant on auto. Auto consumes the product when there is a biotic
+reaction to make one and the donor when there is not, which is right in both
+cases. Setting it to the product here is the trap: nothing makes the product,
+so the rate multiplies a field of zeros, every run in the sweep comes out
+identical, and the Damkohler number is recorded against a run it could not
+affect. That combination is refused before the run starts.
+
+What you get is Ac -> P with the two summing to the feed. Measured on a 60 by
+16 channel at Peclet 10: at Da_abio 0.5 the donor leaves at 0.801 and the
+product at 0.198; at 5.0 they are 0.276 and 0.723. Set "and turns it into" to
+none if you want a terminal loss instead, where the reactant is consumed and
+nothing tracked appears.
+
+The acceptor A rides through as a conservative tracer. That is useful: it shows
+where the water went, as distinct from where the chemistry got to.
+
+--------------------------------------------------------------------------------
+BOTH - microbes make a product, chemistry removes it
+--------------------------------------------------------------------------------
+    The reactions in this run              both
+    How many chemicals                 4
+    The abiotic reaction consumes      auto     (which is the product here)
+    The abiotic reaction happens       only on grain surfaces
+    Lowest / Highest Damkohler         0.1 / 10
+    Lowest / Highest ABIOTIC Damkohler 0.1 / 10
+
+This is the CompLaB-like case and the only one where the two reactions
+interact, because the abiotic one is fed entirely by the biotic one. The two
+Damkohler numbers are drawn INDEPENDENTLY, so the network can learn to tell the
+two reactions apart. An earlier version wrote one number into both columns and
+could not.
+
+Set the abiotic reaction to happen only on grain surfaces if you mean
+precipitation. A voxel in a narrow throat has solid on three sides and presents
+three times the reactive area of one against a flat wall, and the solver
+weights it accordingly.
+
+
+================================================================================
+THE SIX NUMBERS
+================================================================================
+Every simulation is described by six dimensionless numbers. A 60-micrometre
+core and a 60-centimetre column with the same six behave identically, so one
+trained network covers both.
+
+  Pe        PECLET. How much faster water carries a chemical than diffusion
+            spreads it: velocity x length / diffusivity. At Pe 1 solute wanders
+            into every dead end; at Pe 50 it rides the fast channels and barely
+            visits the slow pores. The field looks completely different, which
+            is why the network must be told.
+
+  Da_bio    BIOTIC DAMKOHLER. Reaction rate against flow: k x length /
+            velocity. At 0.1 the water is through before much is consumed. At
+            10 everything is eaten in the first few pores. At 1 the front sits
+            mid-sample, which is the interesting case and the hardest.
+
+  Da_abio   The same for the abiotic reaction. Independent of the biotic one.
+
+  Ks_Ac     Monod half-saturation for acetate, over the inlet acetate. Default
+            0, which means FIRST ORDER in acetate, not Monod with a zero
+            constant.
+
+  Ks_A      The same for sulfate. Default 0.15.
+
+  Y         Biomass built per acetate consumed. Default 0.04.
+
+WHICH DAMKOHLER. Two conventions differ by a factor of Pe. The advective one
+above compares reaction against flow. The diffusive one compares it against
+diffusion, Da_diff = Da_adv x Pe. The generators here use the advective form;
+CompLaB's campaign builder uses the diffusive form and converts.
+
+WHICH LENGTH. Peclet and both Damkohlers carry a length, so which length you
+pick decides what all three mean. "sample" is the whole inlet-to-outlet
+distance; "characteristic" is the open pore width, which is what CompLaB uses.
+On a 148-voxel domain with a 16-micrometre pore they differ by 9.25 times. The
+report prints the factor and converts. Both reach the solver.
+
+
+================================================================================
+WHAT THE NETWORK SEES
+================================================================================
+Three inputs.
+
+THE PORE STRUCTURE goes into a convolutional encoder, which compresses it into
+a short list of numbers that every voxel of that sample shares.
+
+THE SIX NUMBERS go into a small network of their own, so the model can respond
+to new conditions without retraining.
+
+THE POSITION AND TIME of the point being asked about, plus the GEODESIC
+DISTANCE from the inlet: not the straight-line distance, but the shortest path
+a molecule could actually swim, around the grains. In a tortuous rock the two
+differ by a factor of two, and the straight-line one says a molecule can reach
+a spot sealed behind a grain. Everything this project claims rests on that
+distinction being worth the trouble, which is why there is a switch to turn it
+off and check.
+
+The three combine to give the concentration of every chemical at that point at
+that time. Ask about every pore voxel and you have the field.
+
+
+================================================================================
+PROJECT 1 - 2D, FROM SCRATCH
+================================================================================
+About two hours on your own machine. Two dimensions is a slice through the
+rock, roughly fifty times cheaper than three. Settle questions about the method
+here, then confirm in 3D. Set "Working in: 2D" at the top left.
+
+STEP 0   Set up -> Check everything at once.
+Ten groups, a few minutes. It tests the solvers against answers that can be
+written down without them: plug flow through an open channel must leave
+exp(-Da) of the inlet concentration at the outlet, and a front must spread as
+wide as the exact erfc solution says. Green means the machinery works. It says
+nothing about whether your science is right.
+
+STEP 1   Set up -> Make a 2D dataset.
+
+    Save the dataset as                work\2D_new\dataset.h5
+    Where the pore structures come from   generate new ones
+    How many to generate               16
+    Lowest / Highest porosity          0.55 / 0.85
+    Grid size (nx ny)                  148 64
+    Parameter sets per structure       5
+    Snapshots in time                  8
+    The reactions in this run              biotic only
+    How many chemicals                 4
+    Lowest / Highest Peclet            3 / 50
+    Lowest / Highest Damkohler         0.1 / 10
+    Transport steps                    leave blank
+
+  How many to generate. Scoring holds out whole STRUCTURES, never individual
+  runs, because two runs on the same rock share its geometry. 16 gives 14 to
+  learn from and 2 to be judged on: enough to catch memorising, not enough to
+  quote. Use 60 for a real result.
+
+  Porosity 0.55 to 0.85, absurdly high if you know rocks and specific to two
+  dimensions: a thresholded random field stops connecting side to side at about
+  0.59 in 2D and about 0.20 in 3D. In 2D a path can be blocked by going around;
+  in 3D it can go over. That gap is also why a structure-reading network
+  trained in 2D cannot simply be reused in 3D.
+
+  Grid 148 x 64, which is what the published 2D work uses and what PROJECT 2
+  needs.
+
+  Snapshots spaced LOGARITHMICALLY, because filling is fast at first and then
+  asymptotic: even spacing puts the whole transient in the first interval.
+
+  Peclet 3 to 50. Below Pe 1 the problem becomes diffusion-controlled and one
+  run costs about ten times more.
+
+  Transport steps blank, so each run integrates until every chemical stops
+  changing. That is the only setting right at every Peclet and Damkohler.
+
+WHAT IS BEING SOLVED
+
+  GEOMETRY. Smoothed white noise cut at the threshold giving your porosity.
+  Pore space the inlet cannot reach becomes solid, because an isolated pocket
+  has no distance-from-the-inlet.
+
+  FLOW. Lattice-Boltzmann D2Q9, two relaxation times, body force along +x,
+  halfway bounce-back on the grains. It runs until the field stops changing, so
+  the iteration box is a CAP and not the number of iterations. Solved once per
+  structure: Stokes flow is linear, so changing Peclet rescales the same field.
+
+  TRANSPORT. Fixed concentration at the inlet, zero gradient at the outlet and
+  the sides, no flux at the grains. At t = 0 every solute is zero and biomass
+  is uniform at 0.1, because the bacteria are already there waiting to be fed.
+  Biomass does not advect; it is attached. Letting it wash downstream empties
+  the sample of bacteria exactly where the food is.
+
+  NUMERICS. Second-order advection with a minmod limiter, flux-form diffusion,
+  explicit in time. The limiter matters: plain upwinding adds a spurious
+  diffusivity of half the local speed times the voxel size, four times the
+  physical amount at Peclet 300 on a 64-voxel domain, so a run labelled Peclet
+  300 behaves like Peclet 107.
+
+  CHECKED BEFORE ANYTHING IS WRITTEN. Seven assertions on every run, covering
+  the maximum principle, negative values, checkerboarding, causality, duplicate
+  chemicals, blank chemicals and reaction rates with no reactant. If any run
+  fails, NO FILE IS WRITTEN. A dataset that looks fine and is not is worse than
+  no dataset.
+
+STEP 2   Look at results -> Viewer -> Open Dataset.
+Step through the snapshots. The front must enter on the LEFT and move right.
+Then set "Show" to the geodesic distance and look at that: it is how the
+network senses the rock. An empty snapshot 0 is correct.
+
+STEP 3   Learn -> Train the network.
+
+    Dataset                            work\2D_new\dataset.h5
+    Folder for the result              work\2D_new\model
+    How many passes over the data      60
+    Samples per step                   8
+    Voxels sampled per step            8192
+    Learning rate                      0.001
+    Stop after this many bad epochs    20
+    What the network uses to sense geometry    gdf
+    every switch                       OFF
+
+  8192 voxels is all of them on a 148 x 64 structure, which holds about 7,000
+  pore voxels. In 3D at 64 cubed there are of order 100,000 and it is a real
+  sample.
+
+  Switches OFF. This is the baseline every later claim is compared against.
+
+Watch the Monitor tab. Only the held-out curve matters. It sits BELOW the
+training curve for the first few epochs, because the training number is
+averaged over the whole epoch including its clumsy beginning, and both spike
+together occasionally when the optimizer steps back. Only a sustained
+divergence means memorising. About 45 minutes.
+
+STEP 4   Learn -> Evaluate a trained network. Tick "Skip the 3D renders".
+Read in this order: time_model_2d.png, truth above and prediction below, and
+check the front enters on the left - this picture has caught more errors than
+every numerical check combined. Then rmse_vs_params.png, which shows WHERE the
+model is weak rather than how weak on average, usually at high Peclet. Then
+metrics.json: R-squared near 0.95 is good, RMSE around 0.05 means typical
+errors of five percent of the inlet concentration.
+
+STEP 5   Predict -> Predict on a new geometry, using a structure NOT in the
+dataset, Peclet 10 and both Damkohlers 1. Under a second, against minutes for
+the simulation. Check that concentrations do not exceed 1.0 and that the field
+at t = 0 is zero. A network trained this way often violates both slightly,
+because nothing in the loss function says concentrations are bounded. Note the
+size of the violation: it is the measured argument for hard constraints.
+
+
+================================================================================
+PROJECT 2 - 2D, FROM SOMEBODY ELSE'S TRAINED NETWORK
+================================================================================
+About an hour. Needs the published 2D release in the 2D folder.
+
+STEP 1   The published 2D release -> Browse its 3000 domains, and Its trained
+models. Be clear what is there: 3,000 pore structures, several trained
+networks, notebooks. There is NO simulation output. That decides which of the
+next two steps applies.
+
+STEP 2A   Their structures, our chemistry. Set up -> Make a 2D dataset with
+"Where the pore structures come from" set to "use the published 2D domains" and
+"How many of them to use" 200. This solves OUR reactions on their real
+structures, so a 2D and a 3D result differ only in dimension. It is not their
+physics, and saying so is the point. About half an hour.
+
+STEP 2B   Their simulation output, if you can get it. Set up -> Load somebody
+else's 2D simulations, with "Only report what is there" TICKED and pointed at
+ONE example file. It says what it found and what is missing, and counts how
+many DISTINCT structures the set holds, warning if every run used the same one,
+because a split by structure is then impossible.
+
+STEP 3   Set up -> Warm-start from the published 2D weights.
+
+    Their trained model                2D\parameters\Monod.pt
+    The grid it was trained on (nx ny) 148 64
+    Chemicals in YOUR dataset          4
+    Parameters in YOUR dataset         6
+    Save the warm start as             work\2D_new\model\warmstart.pt
+
+Their position-and-time network takes x, y, time and geodesic distance, exactly
+what this program builds in 2D, so it transfers with no surgery. Their
+parameter network takes 2 numbers where ours takes 6, so its first layer is
+skipped and the tool says so rather than quietly reshaping anything.
+
+STEP 4   Train as in PROJECT 1 but with "Start from an existing model" set to
+the warm start and "freeze the reaction part" TICKED, which keeps their
+reaction response and retrains only the part that reads the rock. That is the
+right way round: the chemistry is the same in 2D and 3D, the pore structure is
+not. Whether it helps is an open question, so run it both ways and compare the
+held-out error. That comparison is a result either way.
+
+
+================================================================================
+PROJECT 3 - 3D, FROM SCRATCH
+================================================================================
+About two hours at 32 cubed, overnight at 64 cubed. Set "Working in: 3D".
+
+STEP 1   Set up -> Make a 3D dataset.
+
+    Save the dataset as                work\3D_new\dataset.h5
+    Grid size (nx ny nz)               32 32 32
+    How many pore structures           16
+    Parameter sets per structure       5
+    Snapshots in time                  8
+    The reactions in this run              both
+    How many chemicals                 4
+    Lowest / Highest porosity          0.30 / 0.50
+    Lowest / Highest Peclet            1 / 50
+    Lowest / Highest Damkohler         0.1 / 10
+    Lowest / Highest ABIOTIC Damkohler 0.1 / 10
+    Random seed                        0
+
+THE GRID IS THE EXPENSIVE CHOICE. Cost goes as roughly the fifth power: the
+voxel count as the cube, and an explicit scheme needs time steps going as the
+square. Measured per run on one core:
+
+        32 cubed     7 seconds        16 structures x 5 sets:   15 minutes
+        48 cubed    58 seconds                                  80 minutes
+        64 cubed     4 minutes                                 5.5 hours
+
+Prove the pipeline at 32 in an afternoon, then commit to 64 overnight. 64 is
+the grid the CompLaB campaign uses, so a model trained there can be compared
+against real simulation output directly.
+
+POROSITY 0.30 to 0.50, not PROJECT 1's range: the percolation threshold is
+three times lower in 3D. The number in the log reads about 0.06 higher than you
+asked for, because the printed figure includes the fully-open end slices, which
+on a 32-voxel domain are a fifth of the volume. The bias halves at 64.
+
+THE PHYSICS is identical to PROJECT 1 with one dimension more: D3Q19 instead of
+D2Q9, the same boundaries, the same two reactions, the same checks. That is
+deliberate, so any difference between a 2D and a 3D result is about
+dimensionality and not about chemistry.
+
+ONE LIMITATION. The three Monod and yield parameters are held constant, so
+three of the network's six parameter inputs carry no information and it is
+blind to them. To study sensitivity to Ks, the dataset must vary it.
+
+STEP 2   Viewer -> Open Dataset. Three orthogonal slices and a cut-away.
+
+STEP 3   Learn -> Train the network, as in PROJECT 1 but with 8192 voxels and
+every switch OFF. Check the header says
+
+    trunk inputs: x, y, z, t, gdf
+
+Five columns, with z present. That one line confirms you are training in three
+dimensions and not on a flattened dataset. About 80 to 110 seconds an epoch at
+32 cubed.
+
+STEP 4   Learn -> Evaluate, with "Skip the 3D renders" UNTICKED. Look at
+time_model_3d.png and physics_model_00_3d.png: half-cut volumes, the first
+figures here that look like rock.
+
+STEP 5   You need a structure that was never simulated. Set up -> Generate pore
+geometries, 4 structures at 32 32 32, porosity 0.30 to 0.50, into
+work\geometries\holdout_32, with random seed 4242.
+
+The seed MUST differ from the dataset's. That is what guarantees these
+structures are not ones the network trained on. Two defaults will hurt you:
+porosity defaults to 0.20 to 0.95, far wider than any model trained here, and
+the grid defaults to 128 x 64 x 64, which a 32-cubed model cannot read at all,
+because the encoder's size is fixed by the grid.
+
+Then Predict -> Predict on a new geometry with one of the new .npz files.
+Leave the three voxel-count boxes blank: an .npz carries its own grid. Around
+40 milliseconds.
+
+
+================================================================================
+PROJECT 4 - 3D FROM DATA SOMEBODY ELSE SIMULATED
+================================================================================
+Three situations wear the same clothes. Work out which you have first.
+
+CASE A   Output from a CompLaB campaign. Simulate -> Collect CompLaB output
+into a dataset, snapshots "transient", resampled to 11. Runs stop at different
+iterations and hold different numbers of snapshots; resampling puts them on one
+common normalised time axis, which is what makes the network's time input mean
+the same thing in every run. Leave "skip the flow field" OFF, or the flow-proxy
+and dimension-free options in PROJECT 5 cannot be used and you will collect
+thousands of files twice.
+
+Runs that crashed, produced NaN or came out all zero are skipped and REPORTED.
+Read campaign_report.md; a yield well below 100% usually means something
+systematic. To rehearse before a real campaign finishes, Set up -> Make a
+practice CompLaB campaign writes real files in the real layout, including two
+deliberately broken runs.
+
+CASE B   You have 2D data and want to train in 3D. Simulate -> Build the 2D
+transfer set extrudes a 2D structure along z. For a prismatic medium that is
+EXACT, not an approximation, and the tool measures the variation along z and
+prints it. Its grid must match your 3D dataset exactly. The catch is the
+percolation gap from PROJECT 1: extruded data teaches chemistry well and
+topology badly, so use it as a supplement of around 30%, not a replacement.
+
+CASE C   Somebody else's trained 3D network. Put its path into "Start from an
+existing model" on the Train page. The grid and the chemical names must match;
+if they do not the program says which and refuses.
+
+
+================================================================================
+PROJECT 5 - 3D WITH THE THREE SWITCHES
+================================================================================
+Overnight. Do PROJECT 3 first; without its baseline none of this means
+anything. Each switch is off by default, and off reproduces the original code
+exactly: a test re-implements the original inside itself and compares the
+arrays bit for bit.
+
+SWITCH A   Use the flow field instead of the geometry: the ADVECTIVE TRAVEL
+TIME in place of the geodesic distance, and the velocity field in place of the
+pore mask. Travel time already contains what the encoder is struggling to work
+out, and it is Peclet-independent because Stokes flow is linear. It may lose
+below Peclet 1, where solute arrives by diffusion and a stagnant velocity field
+cannot tell a deep dead-end pore from solid rock: travel time is infinite in
+both, while the geodesic distance still distinguishes them. Setting it to
+"both" keeps the geodesic distance as well and is the safe option.
+
+SWITCH B   Mix in 2D data, typically 30%. See PROJECT 4 CASE B.
+
+SWITCH C   Dimension-free coordinates: travel time, distance to the nearest
+wall, and time. Three inputs in 2D and three in 3D, so the same network fits
+both and a model trained on cheap 2D data can be applied to 3D. It turns on
+SWITCH A automatically because it needs the travel time. The price is that the
+network no longer knows where it is in the sample, only how far along the flow
+and how far from a wall.
+
+RUNNING THE COMPARISON. Learn -> Run the switch comparison, with 300 epochs per
+configuration. Tick "Quick plumbing check only" ONCE first: three epochs, tiny
+batches, proving it runs and nothing else. Then untick and leave it overnight.
+
+It trains the baseline, the Euclidean control, flow-with-travel-time,
+flow-with-both, dimension-free and the two 2D-transfer variants, scores every
+one on the SAME held-out structures, and splits the error BY PECLET BAND. That
+breakdown is the point. Write down your prediction before you look: the flow
+field should win at high Peclet and lose below 1. If your dataset has no runs
+below Peclet 1, the comparison cannot test half of that, which is the argument
+for building one with the lowest Peclet at 0.3.
+
+
+================================================================================
+WHEN SOMETHING GOES WRONG
+================================================================================
+The settings panel prints four kinds of remark and they mean different things.
+
+  NOTES                     something overrode a default. Informational.
+  LEGAL, BUT PROBABLY NOT   the run will start. Read these: a blank chemical,
+  WHAT YOU MEANT            two chemicals that will be identical, a biomass in
+                            a run with no microbes.
+  PROBLEMS                  nothing is simulated until you fix it.
+  PHYSICS run N             a finished run failed a check on its own output.
+                            No file is written.
+
+The three faults you are most likely to hit, in the order they appear.
+
+  A run stops at the step cap. Raise the transport step cap to the number the
+  banner prints. Low-Peclet runs need it most.
+
+  A chemical is a rescaled copy of another. Two chemicals have nothing to tell
+  them apart. Give one a different diffusion coefficient, or reduce the count.
+
+  A Damkohler number whose reactant is zero everywhere. The reaction had
+  nothing to act on. Check the reaction mode and which chemical the abiotic
+  reaction consumes.
+
+The Problems tab collects every error with the command that produced it, and
+the same command appears on every action page before you press Run, so you can
+paste it into a terminal. The usual causes are a path that does not exist yet,
+a dataset built at a different grid size than the model expects, a switch on
+with no velocity field at prediction time, and a checkpoint and dataset that
+disagree about the chemicals.
+
+Set up -> Check everything at once is the fastest way to tell a broken
+installation from a broken idea.
