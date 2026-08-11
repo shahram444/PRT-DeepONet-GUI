@@ -12,9 +12,13 @@ License, version 3, is in `LICENSE`.
 
 ### The three-dimensional work, the simulation generators and this application
 
-Shahram Asgari, shahram.asgari@uga.edu
-Christof Meile, cmeile@uga.edu
-Meile Lab, University of Georgia, Athens, Georgia, USA
+| | | |
+|---|---|---|
+| Shahram Asgari | author | shahram.asgari@uga.edu |
+| Christof Meile | principal investigator | cmeile@uga.edu |
+
+Meile Lab, Department of Marine Sciences, University of Georgia, Athens,
+Georgia 30602, USA
 
 Covering the three-dimensional formulation, the geometry generator, the D2Q9
 and D3Q19 lattice Boltzmann flow solvers, the shared advection, diffusion and
@@ -29,8 +33,12 @@ Georgia.
 
 PRT-DeepONet, on which the two-dimensional side of this project builds:
 
-Yehoon Kim, Chungnam National University, wnsla7323 at naver.com
-Heewon Jung, Chungnam National University, hjung at cnu.ac.kr
+| | |
+|---|---|
+| Yehoon Kim | wnsla7323@naver.com |
+| Heewon Jung | hjung@cnu.ac.kr |
+
+Jung Lab, Chungnam National University, Republic of Korea.
 
 Copyright (C) 2025 Jung Lab. Licensed under the GNU General Public License,
 version 3 or later.
@@ -67,7 +75,7 @@ Offered under a **dual licence**.
 **Academic, research and teaching use.** GNU General Public License, version 3
 or later. Free to use, study, modify and redistribute, provided that
 derivative work carries the same licence and stays open. The full text is in
-`LICENSE`.
+`LICENSE`, and a copy with no header is in `COPYING`.
 
 **Commercial and industrial use.** Not covered by the above. A separate
 licence is required. Write to the addresses at the top of this file.
@@ -90,14 +98,24 @@ itself a derivative work is an unsettled question in law.
 
 ## How to cite
 
-Cite the two-dimensional work as PRT-DeepONet, Kim and Jung, Chungnam National
-University, 2025.
+**This project:**
 
-Cite the three-dimensional extension as this project, Asgari and Meile, Meile
-Lab, University of Georgia, 2026.
+> Asgari, S., Meile, C., 2026. PRT-DeepONet Studio, version 1.0. Meile Lab,
+> Department of Marine Sciences, University of Georgia, Athens, Georgia, USA.
+> Contact: shahram.asgari@uga.edu (author), cmeile@uga.edu (principal
+> investigator).
+
+**The two-dimensional work it builds on:**
+
+> Kim, Y., Jung, H., 2025. PRT-DeepONet. Jung Lab, Chungnam National
+> University, Republic of Korea. Contact: wnsla7323@naver.com,
+> hjung@cnu.ac.kr.
 
 If you use both, cite both. The geometry-aware three-dimensional method
 extends their architecture; it does not replace it.
+
+A machine-readable version of the first entry is in `CITATION.cff`, which is
+what puts the "Cite this repository" button on the GitHub page.
 
 ---
 

@@ -259,15 +259,42 @@ and 2 are swapped. `bridge/` handles the translation; nothing else needs to.
 
 ## Licence, attribution and citation
 
-Everything in `2D/` is the published PRT-DeepONet release of Kim and Jung,
-Jung Lab, Chungnam National University, redistributed unmodified under the GNU
-General Public License, version 3 or later.
+### Authors
 
-The three-dimensional code and the application are dual licensed: GPL v3 or
-later for academic, research and teaching use, and a separate licence for
-commercial and industrial use.
+| | | |
+|---|---|---|
+| Shahram Asgari | author | shahram.asgari@uga.edu |
+| Christof Meile | principal investigator | cmeile@uga.edu |
 
-`LICENSING.md` gives the full picture, including who wrote which part, how to
-cite the two halves, and two unresolved questions about dual licensing that
-should be settled before this is distributed outside the group. The legal text
-of the GPL is in `LICENSE`.
+Meile Lab, Department of Marine Sciences, University of Georgia, Athens,
+Georgia 30602, USA.
+
+Everything in `2D/` is the published PRT-DeepONet release of Yehoon Kim
+(wnsla7323@naver.com) and Heewon Jung (hjung@cnu.ac.kr), Jung Lab, Chungnam
+National University, redistributed unmodified.
+
+### Licence
+
+The whole project is released under the **GNU General Public License, version
+3 or later**, which is the licence `2D/` carries and which this work therefore
+inherits. Commercial and industrial use is not covered by those terms and
+requires a separate licence; write to the addresses above.
+
+The legal text is in `LICENSE`, with the authorship and citation header at the
+top, and in `COPYING` without it.
+
+### How to cite
+
+> Asgari, S., Meile, C., 2026. PRT-DeepONet Studio, version 1.0. Meile Lab,
+> Department of Marine Sciences, University of Georgia, Athens, Georgia, USA.
+
+> Kim, Y., Jung, H., 2025. PRT-DeepONet. Jung Lab, Chungnam National
+> University, Republic of Korea.
+
+If you use both halves, cite both. `CITATION.cff` holds the same information
+in machine-readable form, which is what puts a "Cite this repository" button
+on the GitHub page.
+
+`LICENSING.md` gives the full picture, including two unresolved questions
+about dual licensing that should be settled before this is distributed outside
+the group.
