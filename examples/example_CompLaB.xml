@@ -1,0 +1,141 @@
+<?xml version="1.0" ?>
+<!-- ==========================================================================
+     DEMO input file, written by make_demo_complab.py.
+
+     It is the real CompLaB campaign dialect and it is what the collector
+     reads, but the results beside it were CONSTRUCTED, not simulated.
+
+         Ac + A -> P     driven by the microbe Bio
+         R = Vmax * Bio * Ac/(Ks_ac+Ac) * A/(Ks_a+A)
+
+     ========================================================================== -->
+<parameters>
+
+    <path>
+        <src_path>src</src_path>
+        <input_path>input</input_path>
+        <output_path>output</output_path>
+    </path>
+
+    <simulation_mode>
+        <biotic_mode>true</biotic_mode>
+        <enable_kinetics>true</enable_kinetics>
+        <enable_abiotic_kinetics>false</enable_abiotic_kinetics>
+        <enable_validation_diagnostics>false</enable_validation_diagnostics>
+    </simulation_mode>
+
+    <LB_numerics>
+        <domain>
+            <nx>64</nx>                       <!-- flow runs along +x -->
+            <ny>32</ny>
+            <nz>1</nz>
+            <dx>10.0</dx>
+            <unit>um</unit>
+            <characteristic_length>320</characteristic_length>
+            <filename>geometry.dat</filename>
+            <material_numbers>
+                <pore>2</pore>                  <!-- read by the collector -->
+                <solid>0</solid>
+                <bounce_back>1</bounce_back>
+            </material_numbers>
+        </domain>
+        <delta_P>0.001</delta_P>
+        <Peclet>10</Peclet>               <!-- the condition of this run -->
+        <tau>0.8</tau>
+        <track_performance>false</track_performance>
+        <iteration>
+            <ns_max_iT1>200000</ns_max_iT1>
+            <ns_max_iT2>50000</ns_max_iT2>
+            <ns_converge_iT1>1e-8</ns_converge_iT1>
+            <ns_converge_iT2>1e-6</ns_converge_iT2>
+            <ade_max_iT>4000</ade_max_iT>
+            <ade_converge_iT>1e-9</ade_converge_iT>
+            <ns_update_interval>1</ns_update_interval>
+            <ade_update_interval>1</ade_update_interval>
+        </iteration>
+    </LB_numerics>
+
+    <chemistry>
+        <number_of_substrates>3</number_of_substrates>
+
+        <substrate0>
+            <name_of_substrates>Ac</name_of_substrates>          <!-- electron donor -->
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>1.0e-9</in_pore><in_biofilm>5.0e-10</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>1</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate0>
+
+        <substrate1>
+            <name_of_substrates>A</name_of_substrates>            <!-- electron acceptor -->
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>1.2e-9</in_pore><in_biofilm>6.0e-10</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>0.85</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate1>
+
+        <substrate2>
+            <name_of_substrates>P</name_of_substrates>            <!-- product -->
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>1.0e-9</in_pore><in_biofilm>5.0e-10</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Neumann</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>0.0</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate2>
+    </chemistry>
+
+    <microbiology>
+        <number_of_microbes>1</number_of_microbes>
+        <maximum_biomass_density>1.0</maximum_biomass_density>
+        <thrd_biofilm_fraction>0.1</thrd_biofilm_fraction>
+        <CA_method>half</CA_method>
+
+        <microbe0>
+            <name_of_microbes>Bio</name_of_microbes>
+            <solver_type>CA</solver_type>
+            <reaction_type>kinetics</reaction_type>
+            <initial_densities>0.05</initial_densities>
+            <decay_coefficient>1.0e-7</decay_coefficient>
+            <biomass_diffusion_coefficients>
+                <in_pore>0.0</in_pore>
+                <in_biofilm>0.0</in_biofilm>
+            </biomass_diffusion_coefficients>
+            <half_saturation_constants>0.15 0.1 0.0</half_saturation_constants>
+            <maximum_uptake_flux>0.9 0.9 0.0</maximum_uptake_flux>
+            <left_boundary_type>Neumann</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>0.0</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </microbe0>
+    </microbiology>
+
+    <equilibrium>
+        <enabled>false</enabled>
+        <components>none</components>
+        <stoichiometry><species0>0.0</species0></stoichiometry>
+        <logK><species0>0.0</species0></logK>
+    </equilibrium>
+
+    <IO>
+        <read_NS_file>false</read_NS_file>
+        <ns_rerun_iT0>0</ns_rerun_iT0>
+        <read_ADE_file>false</read_ADE_file>
+        <ns_filename>nsLattice</ns_filename>
+        <mask_filename>maskLattice</mask_filename>
+        <subs_filename>subsLattice</subs_filename>       <!-- gives subsLattice0_*.vti -->
+        <bio_filename>bioLattice</bio_filename>
+        <save_VTK_interval>2000</save_VTK_interval>
+        <save_CHK_interval>0</save_CHK_interval>
+
+        <save_reaction_rates>true</save_reaction_rates>
+        <rate_filename>rateLattice</rate_filename>
+        <rate_interval>0</rate_interval>
+        <rate_unit>mol/L/s</rate_unit>
+    </IO>
+
+</parameters>

@@ -1,0 +1,325 @@
+<?xml version="1.0" ?>
+<!-- =========================================================================
+     PRT-DeepONet-3D  :  SIMULATION SETTINGS for the Python generators
+     =========================================================================
+
+     HOW TO READ THIS FILE
+       This is a settings file, not a program. A setting is a labelled box:
+       <name>value</name> means "name = value". Boxes inside boxes group
+       related settings. Anything between an angle bracket, an exclamation
+       mark and two dashes, and the closing two dashes and angle bracket, is a
+       note for you and is ignored by the code. This whole guide is one note.
+
+     THE LAYOUT IS CompLaB'S ON PURPOSE
+       The tag names are the ones CompLaB uses, so you can hand a real
+       CompLaB.xml to these scripts and they will read what they understand.
+       They will also print a list of everything in it they cannot honour, by
+       name, rather than dropping it quietly. See the <usage> block below
+       for the full list of what this solver does and does not do. The exact
+       commands are in the <usage> block below, because an XML note is not
+       allowed to contain two dashes in a row and every one of them has a flag
+       in it.
+
+     UNITS, ONCE
+       lengths          micrometres (dx, characteristic_length)
+       concentrations   mol/L      so 2e-3 is 2 mM
+       diffusion        m^2/s      so 1e-9 is a small ion in water
+       rates            per second, unless you set rate_unit to per_day
+       tau, delta_P     lattice units, exactly as in CompLaB
+
+     CHECK IT BEFORE YOU RUN IT
+       The check command in <usage> prints every number in this file, every
+       number derived from them, and every mistake, before anything runs.
+     ========================================================================= -->
+<parameters>
+
+  <usage>
+    check this file       python settings_and_units.py --check FILE
+    what it cannot do     python settings_and_units.py --capabilities
+    build a 3D dataset    python build_dataset_3d.py --settings FILE --out data3d.h5
+    build a 2D dataset    python build_dataset_2d.py --settings FILE --out data2d.h5
+  </usage>
+
+  <LB_numerics>
+
+    <domain>
+      <nx>148</nx>                     <!-- voxels along x; flow is +x, inlet at x=0 -->
+      <ny>64</ny>                     <!-- voxels along y -->
+      <nz>1</nz>                     <!-- voxels along z; set to 1 for a 2D run -->
+      <dx>1</dx>                     <!-- voxel edge length -->
+      <unit>um</unit>                  <!-- um, mm or m -->
+      <characteristic_length>16</characteristic_length>
+                                    <!-- the open pore width, in the same unit as dx -->
+      <reference_length>sample</reference_length>
+          <!-- WHICH LENGTH the Peclet and Damkohler numbers below are taken against.
+               sample          = the whole inlet-to-outlet distance, nx*dx.
+               characteristic  = the pore width, which is what CompLaB uses.
+               Both now reach the solver. Whichever you pick is the length the
+               simulation itself divides by, not merely the one the report
+               prints.
+               They differ by nx*dx / characteristic_length. Both are printed by
+               the check command so you can convert a number quoted the other
+               way. -->
+      <material_numbers>
+        <pore>2</pore>                <!-- open pore, fluid -->
+        <solid>0</solid>               <!-- solid grain -->
+        <bounce_back>1</bounce_back>         <!-- no-slip wall voxel -->
+      </material_numbers>
+    </domain>
+
+    <tau>0.8</tau>
+        <!-- LBM relaxation time. The lattice viscosity is (tau - 0.5)/3, so tau
+             must be above 0.5 or the viscosity is negative. Use 0.6 to 1.0. -->
+    <delta_P>0.00015</delta_P>
+        <!-- Seed pressure drop driving the flow. Kept small on purpose: the flow
+             is rescaled afterwards to hit the Peclet below, so this only has to
+             be small enough to stay stable while the permeability is measured. -->
+    <flow_driver>peclet</flow_driver>
+        <!-- WHAT SETS THE FLOW SPEED. This is the answer to "do I write a
+             pressure gradient, or does it work from Peclet?".
+             peclet    the flow is solved, then RESCALED so the Peclet number is
+                       the one below. The pressure drop above still drives the
+                       lattice-Boltzmann solve, but its size divides out. This is
+                       what a training set wants, because Peclet is the thing
+                       being swept.
+             pressure  the flow is solved with the pressure drop above and is NOT
+                       rescaled. Peclet is whatever that flow makes it, computed
+                       from the lattice speed, tau, dx and the fluid viscosity,
+                       and recorded per run. This is what you want when you are
+                       reproducing one measured flow rate. -->
+    <fluid_viscosity>1e-06</fluid_viscosity>
+        <!-- m^2/s. Water at 20 C is 1e-6. Only used in pressure mode, where it
+             is what turns a lattice speed into a Peclet number. -->
+    <Peclet>10</Peclet>
+        <!-- advection against diffusion, u * L / D of the first chemical.
+             1 means they balance. Above about 10 the front channels through the
+             fast paths; below 1 diffusion fills the dead ends. -->
+
+    <iteration>
+      <ns_max_iT>30000</ns_max_iT>          <!-- flow-solver steps per structure -->
+      <ns_converge_iT>1e-06</ns_converge_iT>
+      <ade_max_iT>100000</ade_max_iT>       <!-- hard cap on transport steps -->
+      <ade_converge_iT>0.002</ade_converge_iT>
+          <!-- the transport run stops when the mean donor concentration changes
+               by less than this over one advective time. It is NOT a fixed step
+               count on purpose: a count that is right at Peclet 50 leaves the
+               field almost empty at Peclet 1. -->
+      <n_snapshots>8</n_snapshots>
+          <!-- how many times are stored per run. They are spaced logarithmically,
+               because the interesting part is the beginning. -->
+    </iteration>
+
+  </LB_numerics>
+
+  <!-- ===================== THE CHEMICALS =====================
+       The reaction network is fixed: substrate0 is the electron donor,
+       substrate1 the acceptor, substrate2 the product, substrate3 the biomass.
+       Chemicals beyond the fourth are read and reported but not simulated.
+       ========================================================= -->
+  <chemistry>
+    <number_of_substrates>4</number_of_substrates>
+    <rate_unit>per_day</rate_unit>       <!-- per_second or per_day; applies to every rate below -->
+
+        <substrate0>
+            <name_of_substrates>Ac</name_of_substrates>
+            <initial_concentration>0</initial_concentration>   <!-- mol/L everywhere in the pore at t=0 -->
+            <substrate_diffusion_coefficients>
+                <in_pore>1e-09</in_pore>        <!-- m^2/s in open water -->
+                <in_biofilm>5e-10</in_biofilm>     <!-- m^2/s inside the biofilm; read but not yet used by the Python solver -->
+            </substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>     <!-- Dirichlet = fed at this face; Neumann = free -->
+            <left_boundary_condition>0.002</left_boundary_condition>  <!-- mol/L, used only when Dirichlet -->
+            <right_boundary_type>Neumann</right_boundary_type>
+            <right_boundary_condition>0</right_boundary_condition>
+        </substrate0>
+        <substrate1>
+            <name_of_substrates>A</name_of_substrates>
+            <initial_concentration>0</initial_concentration>   <!-- mol/L everywhere in the pore at t=0 -->
+            <substrate_diffusion_coefficients>
+                <in_pore>1e-09</in_pore>        <!-- m^2/s in open water -->
+                <in_biofilm>5e-10</in_biofilm>     <!-- m^2/s inside the biofilm; read but not yet used by the Python solver -->
+            </substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>     <!-- Dirichlet = fed at this face; Neumann = free -->
+            <left_boundary_condition>0.005</left_boundary_condition>  <!-- mol/L, used only when Dirichlet -->
+            <right_boundary_type>Neumann</right_boundary_type>
+            <right_boundary_condition>0</right_boundary_condition>
+        </substrate1>
+        <substrate2>
+            <name_of_substrates>P</name_of_substrates>
+            <initial_concentration>0</initial_concentration>   <!-- mol/L everywhere in the pore at t=0 -->
+            <substrate_diffusion_coefficients>
+                <in_pore>1e-09</in_pore>        <!-- m^2/s in open water -->
+                <in_biofilm>5e-10</in_biofilm>     <!-- m^2/s inside the biofilm; read but not yet used by the Python solver -->
+            </substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>     <!-- Dirichlet = fed at this face; Neumann = free -->
+            <left_boundary_condition>0</left_boundary_condition>  <!-- mol/L, used only when Dirichlet -->
+            <right_boundary_type>Neumann</right_boundary_type>
+            <right_boundary_condition>0</right_boundary_condition>
+        </substrate2>
+        <substrate3>
+            <name_of_substrates>Bio</name_of_substrates>
+            <initial_concentration>0.0002</initial_concentration>   <!-- mol/L everywhere in the pore at t=0 -->
+            <substrate_diffusion_coefficients>
+                <in_pore>0</in_pore>        <!-- m^2/s in open water -->
+                <in_biofilm>0</in_biofilm>     <!-- m^2/s inside the biofilm; read but not yet used by the Python solver -->
+            </substrate_diffusion_coefficients>
+            <left_boundary_type>Neumann</left_boundary_type>     <!-- Dirichlet = fed at this face; Neumann = free -->
+            <left_boundary_condition>0</left_boundary_condition>  <!-- mol/L, used only when Dirichlet -->
+            <right_boundary_type>Neumann</right_boundary_type>
+            <right_boundary_condition>0</right_boundary_condition>
+            <immobile>true</immobile>          <!-- attached: reacts in place, never moves -->
+        </substrate3>
+  </chemistry>
+
+  <!-- ===================== THE REACTIONS =====================
+       biotic:   donor + (stoichiometry) acceptor  ->  product + (yield) biomass
+                 rate = vmax * biomass * donor/(ks_donor+donor)
+                                       * acceptor/(ks_acceptor+acceptor)
+       abiotic:  a first-order loss of the product at k_surf
+       ========================================================= -->
+  <kinetics>
+    <vmax>1</vmax>              <!-- maximum specific rate, per unit biomass -->
+    <ks_donor>0</ks_donor>          <!-- mol/L. Zero makes the rate first order in the donor. -->
+    <ks_acceptor>0.00075</ks_acceptor>    <!-- mol/L -->
+    <yield>0.04</yield>             <!-- mol biomass per mol donor -->
+    <decay>0.05</decay>             <!-- first-order biomass decay -->
+    <stoichiometry>1</stoichiometry>  <!-- mol acceptor consumed per mol donor -->
+    <k_surf>1</k_surf>            <!-- the abiotic rate constant -->
+
+    <!-- ===== WHICH REACTIONS RUN =====
+         Two different things, kept apart on purpose.
+         BIOTIC is microbially mediated: it needs microbes present, obeys Monod
+         kinetics in both the donor and the acceptor, grows biomass with a yield
+         and loses it to decay.
+             donor + (stoichiometry) acceptor -> product + (yield) biomass
+             rate = vmax * biomass * donor/(ks_donor+donor)
+                                   * acceptor/(ks_acceptor+acceptor)
+         ABIOTIC is purely chemical and no microbes take any part in it. It is
+         first order in the product, which is what its Damkohler number is
+         defined against, and it consumes the product.
+             product -> consumed        rate = k_surf * product
+         ============================== -->
+    <reaction_mode>biotic only</reaction_mode>
+        <!-- biotic only | abiotic only | both.
+             THIS is the tag that decides which reactions run, and it is the one
+             written back out. An earlier template wrote biotic_enabled and
+             abiotic_enabled instead: two booleans derived from this one, which
+             nothing reads, so saving a file and loading it again silently
+             reset the reaction mode to the default. -->
+    <abiotic_reactant>auto</abiotic_reactant>
+        <!-- auto | donor | product. auto means the product when there is a
+             biotic reaction to make one, and the donor when there is not. -->
+    <abiotic_product>product</abiotic_product>
+        <!-- product | none.
+             product = the reactant BECOMES the product, one mole for one, so
+                       an abiotic-only run is a real reaction: the donor falls,
+                       the product rises, and the two sum to the feed. This is
+                       what a mineral dissolution or a surface-catalysed
+                       transformation does.
+             none    = the reactant is consumed and nothing tracked appears.
+                       Right for a terminal loss: a solute that precipitates
+                       out, or degrades to something this run does not follow. -->
+    <abiotic_surface_only>false</abiotic_surface_only>
+        <!-- true: the abiotic reaction happens only on pore voxels that touch a
+             grain surface, which is what a mineral-surface reaction does.
+             false: everywhere in the water. -->
+    <damkohler_abiotic>1</damkohler_abiotic>
+
+    <biofilm_code>none</biofilm_code>
+        <!-- the material number for attached biofilm, or "none". A voxel with
+             this number is not solid: chemicals diffuse through it, at
+             diffusion_in_biofilm rather than the pore value. -->
+    <biofilm_layers>1</biofilm_layers>
+        <!-- how many voxels thick to grow the coating on every grain surface. -->
+
+    <biomass_mode>sessile</biomass_mode>
+        <!-- sessile     attached biofilm. It reacts where it is and never moves.
+             planktonic  dissolved cells. They are advected and diffused like any
+                         other chemical, and in a through-flowing sample most of
+                         them leave: measured on a 60 by 32 domain, mean biomass
+                         fell from 0.100 to 0.019 with transport on and to 0.071
+                         with it off, so about three quarters of the loss was
+                         washout rather than decay. -->
+    <biomass_coupled>false</biomass_coupled>
+        <!-- false: the biotic rate holds the biomass at its starting value.
+             That is not an oversight. The Damkohler number is defined as
+             vmax * B0 * L / (Ac0 * u), so B0 is already inside it, and letting
+             B vary as well would count it twice.
+             true: the rate follows the biomass actually present, which is the
+             honest choice when the biomass changes a lot over a run. -->
+
+    <use_physical_kinetics>false</use_physical_kinetics>
+        <!-- WHERE THE DAMKOHLER NUMBERS COME FROM. This is the one switch in
+             this file that changes what is simulated rather than how.
+
+             false  the Damkohler numbers are set directly, below or by the
+                    <sweep> block, and vmax / k_surf / decay are read and
+                    reported but not used. This is what you want for a
+                    TRAINING SET, which has to span the dimensionless space
+                    rather than sit at one system's point in it.
+
+             true   the Damkohler numbers are computed from vmax, k_surf and
+                    decay. This is what you want when you are modelling one
+                    named system and the answer has to be that system's.
+
+             Before switching it on, run the check command and read the
+             Damkohler your kinetics imply. At a sample of tens of micrometres with ordinary
+             diffusion coefficients it is usually far below 1, because
+             diffusion crosses the sample in about a second and no microbial
+             rate competes with that. A column reaches Damkohler 1 by being
+             centimetres long, not by reacting faster. -->
+    <damkohler>1</damkohler>
+        <!-- used when use_physical_kinetics is false and no sweep is given -->
+    <decay_lattice>0.006</decay_lattice>
+        <!-- biomass decay when use_physical_kinetics is false, in the solver's
+             own time units. 0.006 is what the generators used before this file
+             existed, and changing it changes every dataset made from here on. -->
+  </kinetics>
+
+  <!-- ===================== SWEEPING =====================
+       A training set needs MANY conditions, not one. Uncomment this block and
+       the generator varies the conditions across the runs instead of using the
+       single values above.
+
+       For each quantity you have TWO ways to say what you want, and you pick
+       one. Give a RANGE and the generator draws from it at random, spaced
+       logarithmically -- log-uniform rather than uniform because these
+       quantities span decades and a uniform draw would put nine tenths of the
+       runs in the top decade. Give a LIST and it uses exactly those numbers
+       and nothing else, which is what you want when you are reproducing
+       published conditions or answering a reviewer who asked for Pe = 1, 10
+       and 100.
+
+       If you give both, the list wins and the range is ignored.
+
+       POROSITY works the same way. A range means every structure is built at
+       its own random porosity inside it; a list means structures are built at
+       exactly those porosities, cycling through the list in order, so ten
+       structures over a list of two porosities gives five of each.
+
+       When you list values, the generator makes every combination of them.
+       Three Peclet numbers and two Damkohler numbers is six conditions per
+       structure, and 'runs per structure' is set to six for you unless you
+       ask for a different number.
+       ==================================================== -->
+  <!--
+  <sweep>
+    <peclet_min>1</peclet_min>
+    <peclet_max>50</peclet_max>
+    <damkohler_min>0.1</damkohler_min>
+    <damkohler_max>10</damkohler_max>
+    <damkohler_abiotic_min>0.1</damkohler_abiotic_min>
+    <damkohler_abiotic_max>10</damkohler_abiotic_max>
+    <porosity_min>0.35</porosity_min>
+    <porosity_max>0.50</porosity_max>
+
+    ... or, instead of any of the pairs above, the exact numbers:
+
+    <peclet_values>1, 10, 50</peclet_values>
+    <damkohler_values>0.1, 1, 10</damkohler_values>
+    <damkohler_abiotic_values>0.5, 5</damkohler_abiotic_values>
+    <porosity_values>0.35, 0.40, 0.45</porosity_values>
+  </sweep>
+  -->
+
+</parameters>
