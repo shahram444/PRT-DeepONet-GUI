@@ -1,7 +1,0 @@
-numpy
-scipy
-h5py
-matplotlib
-scikit-image
-scikit-fmm
-torch
