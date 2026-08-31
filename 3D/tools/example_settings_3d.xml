@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  example_settings_3d.xml
+  ======================================================================
+  A complete, runnable settings file for the 3D dataset generator.
+  Edit the numbers, save, and point the generator at it with its
+  "settings" option:
+
+      python tools/build_dataset_3d.py
+             (settings) tools/example_settings_3d.xml
+             (out) my_dataset.h5  (n-geom) 12  (n-times) 6  (n-species) 4
+
+  Every option in brackets takes two leading dashes on a real command
+  line; they are written this way here only because a double dash is not
+  allowed inside an XML comment.
+
+  CHECK IT BEFORE YOU SPEND HOURS ON IT. Add the "show-settings" option
+  and nothing is simulated: you get a report of what every number means,
+  including which Peclet numbers and which porosities will actually be
+  used, and then it stops.
+
+  In the window this is the box called "Or load it all from a settings
+  file". Anything typed in the boxes still wins over what is in here, so
+  you can load a file and then change one number without editing it.
+
+  Everything below is optional. A tag you leave out keeps its default,
+  and a tag this solver does not understand is reported and ignored
+  rather than silently changing the run. That is deliberate: a real
+  CompLaB.xml can be handed to this reader unchanged.
+  ======================================================================
+-->
+<parameters>
+
+  <!-- ================= THE GRID =================
+       Cost goes as roughly the fifth power of the side: the number of
+       voxels is the cube of it, and the number of transport steps an
+       explicit scheme needs goes as the square. Doubling 32 to 64 is
+       about 32 times the work. Measured on one core, before any
+       reaction is switched on: 32 cubed about 7 s per run, 48 cubed
+       about 1 min, 64 cubed about 4 min.
+       ============================================ -->
+  <geometry>
+    <nx>32</nx>
+    <ny>32</ny>
+    <nz>32</nz>
+    <dx>1.0e-6</dx>
+    <characteristic_length>1.6e-5</characteristic_length>
+  </geometry>
+
+  <!-- ================= THE FLOW =================
+       tau is the lattice relaxation time and sets the viscosity. The
+       pressure drop only SEEDS the solve when the flow is driven by the
+       Peclet number: the field is solved once and then rescaled to hit
+       the Peclet you asked for, so the size of this number divides out.
+       ============================================ -->
+  <flow>
+    <tau>0.8</tau>
+    <delta_P>1.5e-4</delta_P>
+    <flow_driver>peclet</flow_driver>
+    <fluid_viscosity>1.0e-6</fluid_viscosity>
+  </flow>
+
+  <!-- ================= THE REACTIONS =================
+       reaction_mode is one of:
+         "biotic only"    microbes and nothing else
+         "abiotic only"   pure chemistry, no microbes
+         "both"           the two together, each with its own Damkohler
+
+       abiotic_surface_only puts the chemical reaction on pore voxels
+       that touch a grain and nowhere else, which is what a mineral
+       surface reaction does.
+
+       ks_donor of zero is not a missing number: it means the rate is
+       first order in the donor rather than saturating.
+       ================================================= -->
+  <kinetics>
+    <reaction_mode>both</reaction_mode>
+    <abiotic_surface_only>true</abiotic_surface_only>
+    <biomass_mode>sessile</biomass_mode>
+    <vmax>1.0</vmax>
+    <ks_donor>0.0</ks_donor>
+    <ks_acceptor>7.5e-4</ks_acceptor>
+    <yield>0.04</yield>
+    <decay>0.05</decay>
+    <stoichiometry>1.0</stoichiometry>
+    <k_surf>1.0</k_surf>
+  </kinetics>
+
+  <!-- ================= WHAT TO SWEEP =================
+       For each quantity you pick ONE of two ways to say what you want.
+
+         A RANGE, written as a min and a max. Every run draws its own
+         value from it, spaced logarithmically, so the runs spread over
+         the decades instead of crowding into the top one. This is what
+         you want for a training set that has to cover a range.
+
+         A LIST, written as "values". Exactly those numbers and no
+         others. This is what you want when you are reproducing
+         published conditions, or when a reviewer asks for Peclet 1, 10
+         and 100.
+
+       If you give both for the same quantity, the list wins.
+
+       Listing values makes every COMBINATION of them: the three Peclet
+       numbers below crossed with the two Damkohler numbers is six
+       conditions per structure, and the number of runs per structure is
+       set to six for you unless you ask for a different number.
+
+       Porosity is the same choice, but it applies to the structures
+       rather than to the runs. A range gives every structure its own
+       random porosity; a list builds them at exactly those porosities,
+       cycling through in order, so twelve structures over three
+       porosities is four of each. Below about 0.20 the pore space stops
+       spanning the sample in three dimensions and nearly every
+       structure generated is thrown away.
+       ================================================= -->
+  <sweep>
+    <peclet_values>1, 10, 50</peclet_values>
+    <damkohler_values>0.5, 5</damkohler_values>
+    <porosity_values>0.35, 0.40, 0.45</porosity_values>
+
+    <!-- The abiotic reaction keeps a range here, to show the two ways
+         mixing in one file. Delete these two and add
+         damkohler_abiotic_values to pin it to exact numbers too. -->
+    <damkohler_abiotic_min>0.2</damkohler_abiotic_min>
+    <damkohler_abiotic_max>8.0</damkohler_abiotic_max>
+
+    <!-- And this is what ranges look like, if you would rather use
+         them. Delete the four "values" lines above before uncommenting,
+         or the lists will win and these will be ignored.
+
+    <peclet_min>1</peclet_min>
+    <peclet_max>50</peclet_max>
+    <damkohler_min>0.1</damkohler_min>
+    <damkohler_max>10</damkohler_max>
+    <porosity_min>0.35</porosity_min>
+    <porosity_max>0.50</porosity_max>
+    -->
+  </sweep>
+
+  <!-- ================= HOW LONG TO RUN =================
+       The transport solve stops when every chemical has settled to
+       within ade_converge_iT, or at the hard cap, whichever comes
+       first. With the biomass growing there may be no steady state at
+       all, in which case the cap is what defines the transient: runs
+       that hit it are recorded with settled = false in the output file
+       and are still perfectly good training data, because the stored
+       times are normalised per run.
+       =================================================== -->
+  <numerics>
+    <ade_max_iT>8000</ade_max_iT>
+    <ade_converge_iT>2e-3</ade_converge_iT>
+    <ns_converge_iT>1e-6</ns_converge_iT>
+  </numerics>
+
+</parameters>

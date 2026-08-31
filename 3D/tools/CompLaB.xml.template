@@ -1,0 +1,182 @@
+<?xml version="1.0" ?>
+<!-- =========================================================================
+     PRT-DeepONet-3D  —  PLANKTONIC BIOTIC + SURFACE ABIOTIC
+     Rendered by campaign.py.  Do not edit a rendered copy; edit the template.
+     Run @RUN_ID@ : geometry @GID@ , Pe=@PE@ , Da_bio=@DA_BIO@ , Da_abio=@DA_ABIO@
+     =========================================================================
+     WHAT CHANGED FROM T9, AND WHY (verified against the source)
+       1. <material_numbers> has NO <microbe0>.  That absence is THE switch:
+          complab_functions.hh:965-978 sets bmass_type=1 (biofilm) when the tag
+          reads and bmass_type=0 (planktonic) when the read throws.  Planktonic
+          microbes are set up by soluteDomainSetup (complab.cpp:552), exactly
+          like a dissolved substrate, and advection-coupled at complab.cpp:715.
+       2. <solver_type>LBM</solver_type>, not CA -> ca_count==0 -> the whole
+          cellular-automaton block at complab.cpp:986-1018 is dead at runtime.
+       3. <viscosity_ratio_in_biofilm> DELETED, or complab_functions.hh:1149
+          aborts startup (vec_permRatio.size() != bfilm_count, now 0).
+       4. <biomass_diffusion_coefficients> ADDED.  Absent -> defaults to -99
+          (complab_functions.hh:1104) -> omega=0 (complab.cpp:492) -> biomass
+          never advects and diffuses ballistically.  SILENT.
+       5. <precipitation> is OFF by default, so the abiotic reaction runs
+          volumetrically and no voxel is ever converted to solid.  With
+          campaign.py ==surface-abiotic it becomes enabled+surface_only=1 but
+          still WITHOUT <solid_substrate>, so precip_solidSub stays -1 and the
+          node conversion at complab.cpp:1074 never runs.  Nothing precipitates
+          either way == the block name is just how CompLaB exposes the gate.
+       6. <equilibrium><enabled>false</enabled>.  It is on its own branch
+          (complab.cpp:901-907) gated ONLY by this flag —
+          <enable_abiotic_kinetics> does NOT control it.
+       7. All <immobile> flags removed.
+       8. readGeometry reads exactly nx slices and builds the 2 ghost x-planes
+          itself, so geometry.dat holds nx*ny*nz integers.
+       9. Geometry uses ONLY codes 0,1,2.  Unknown codes silently become
+          reactive fluid (complab_functions.hh:243-274).
+     ========================================================================= -->
+<parameters>
+
+    <path>
+        <src_path>src</src_path>
+        <input_path>input</input_path>
+        <output_path>output</output_path>
+    </path>
+
+    <simulation_mode>
+        <biotic_mode>true</biotic_mode>
+        <enable_kinetics>true</enable_kinetics>
+        <enable_abiotic_kinetics>true</enable_abiotic_kinetics>
+        <enable_validation_diagnostics>false</enable_validation_diagnostics>
+    </simulation_mode>
+
+    <LB_numerics>
+        <domain>
+            <nx>@NX@</nx>
+            <ny>@NY@</ny>
+            <nz>@NZ@</nz>
+            <dx>@DX_UM@</dx>
+            <unit>um</unit>
+            <characteristic_length>@CHAR_LEN@</characteristic_length>
+            <filename>geometry.dat</filename>
+            <material_numbers>
+                <pore>2</pore>
+                <solid>0</solid>
+                <bounce_back>1</bounce_back>
+                <!-- NO <microbe0> HERE. Its absence makes the microbe planktonic. -->
+            </material_numbers>
+        </domain>
+        <delta_P>@DELTA_P@</delta_P>
+        <Peclet>@PE@</Peclet>
+        <tau>@TAU@</tau>
+        <track_performance>false</track_performance>
+        <iteration>
+            <ns_max_iT1>@NS_MAX@</ns_max_iT1>
+            <ns_max_iT2>@NS_MAX@</ns_max_iT2>
+            <ns_converge_iT1>1e-8</ns_converge_iT1>
+            <ns_converge_iT2>1e-6</ns_converge_iT2>
+            <ade_max_iT>@ADE_MAX@</ade_max_iT>
+            <ade_converge_iT>@ADE_CONV@</ade_converge_iT>
+            <ns_update_interval>1</ns_update_interval>
+            <ade_update_interval>1</ade_update_interval>
+        </iteration>
+    </LB_numerics>
+
+    <chemistry>
+        <number_of_substrates>3</number_of_substrates>
+
+        <!-- C0 = donor.  SUBSTRATE 0 IS SPECIAL: its <in_pore> sets the global
+             timestep ade_dt = refNu*dx*dx/D[0] (complab.cpp:477) and every other
+             species' relaxation rate is normalised by it.  Never 0. -->
+        <substrate0>
+            <name_of_substrates>Ac</name_of_substrates>
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>@D_AC@</in_pore><in_biofilm>@D_AC_BF@</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>@AC0@</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate0>
+
+        <substrate1>
+            <name_of_substrates>A</name_of_substrates>
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>@D_A@</in_pore><in_biofilm>@D_A_BF@</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Dirichlet</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>@A0@</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate1>
+
+        <!-- C2 = product.  Made biotically in the bulk, removed abiotically at
+             the grain surface.  Not injected. -->
+        <substrate2>
+            <name_of_substrates>P</name_of_substrates>
+            <initial_concentration>0.0</initial_concentration>
+            <substrate_diffusion_coefficients><in_pore>@D_P@</in_pore><in_biofilm>@D_P_BF@</in_biofilm></substrate_diffusion_coefficients>
+            <left_boundary_type>Neumann</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>0.0</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </substrate2>
+    </chemistry>
+
+    <microbiology>
+        <number_of_microbes>1</number_of_microbes>
+        <maximum_biomass_density>100.0</maximum_biomass_density>
+        <thrd_biofilm_fraction>0.1</thrd_biofilm_fraction>   <!-- keep: thrd_bFilmFrac is
+                                                                  otherwise read uninitialised
+                                                                  at complab.cpp:596 -->
+        <CA_method>half</CA_method>
+
+        <microbe0>
+            <name_of_microbes>Bio</name_of_microbes>
+            <solver_type>LBM</solver_type>
+            <reaction_type>kinetics</reaction_type>
+            <initial_densities>@B0@</initial_densities>
+            <decay_coefficient>@KD@</decay_coefficient>
+
+            <!-- MANDATORY for planktonic LBM (see change note 4 above) -->
+            <biomass_diffusion_coefficients>
+                <in_pore>@D_BIO@</in_pore>
+                <in_biofilm>@D_BIO@</in_biofilm>
+            </biomass_diffusion_coefficients>
+
+            <!-- NO <viscosity_ratio_in_biofilm> — it would abort startup -->
+
+            <!-- parsed but never read by the solver; the real rate constants come
+                 from the PRT_* environment variables read by defineKinetics.hh -->
+            <half_saturation_constants>@KS_AC@ @KS_A@ 0.0</half_saturation_constants>
+            <maximum_uptake_flux>@VMAX@ @VMAX@ 0.0</maximum_uptake_flux>
+
+            <left_boundary_type>Neumann</left_boundary_type>
+            <right_boundary_type>Neumann</right_boundary_type>
+            <left_boundary_condition>0.0</left_boundary_condition>
+            <right_boundary_condition>0.0</right_boundary_condition>
+        </microbe0>
+    </microbiology>
+
+    <!-- Rendered by campaign.py.  Default is OFF: the abiotic reaction runs
+         VOLUMETRICALLY and the geometry is frozen.  campaign.py ==surface-abiotic
+         switches this to the surface-gated path (enabled=true, surface_only=1, no
+         <solid_substrate>), which is the only way CompLaB exposes surface gating
+         (complab.cpp:884-899).  Nothing precipitates either way. -->
+@PRECIP_BLOCK@
+
+    <equilibrium>
+        <enabled>false</enabled>
+        <components>none</components>
+        <stoichiometry><species0>0.0</species0></stoichiometry>
+        <logK><species0>0.0</species0></logK>
+    </equilibrium>
+
+    <IO>
+        <read_NS_file>@READ_NS@</read_NS_file>
+        <ns_rerun_iT0>0</ns_rerun_iT0>
+        <read_ADE_file>false</read_ADE_file>
+        <ns_filename>nsLattice</ns_filename>
+        <mask_filename>maskLattice</mask_filename>
+        <subs_filename>subsLattice</subs_filename>
+        <bio_filename>bioLattice</bio_filename>
+        <save_VTK_interval>@VTK_INTERVAL@</save_VTK_interval>
+        <save_CHK_interval>0</save_CHK_interval>
+    </IO>
+
+</parameters>
