@@ -1,0 +1,53 @@
+cff-version: 1.2.0
+title: PRT-DeepONet Studio
+message: >-
+  If you use this software, please cite it as below. If you use the
+  two-dimensional half as well, please also cite Kim and Jung (2025),
+  listed under references.
+type: software
+version: "1.1"
+date-released: "2026-08-31"
+license: GPL-3.0-or-later
+authors:
+  - given-names: Shahram
+    family-names: Asgari
+    email: shahram.asgari@uga.edu
+    affiliation: >-
+      Meile Lab, Department of Marine Sciences, University of Georgia,
+      Athens, Georgia, USA
+  - given-names: Christof
+    family-names: Meile
+    email: cmeile@uga.edu
+    affiliation: >-
+      Meile Lab, Department of Marine Sciences, University of Georgia,
+      Athens, Georgia, USA
+abstract: >-
+  A geometry-aware neural operator for pore-scale reactive transport,
+  together with PRT-LB, a two- and three-dimensional lattice Boltzmann
+  simulator for flow, transport and biotic and abiotic reactions, and a
+  desktop application covering the whole workflow from geometry generation
+  through training to prediction.
+keywords:
+  - pore-scale reactive transport
+  - neural operator
+  - DeepONet
+  - lattice Boltzmann
+  - porous media
+  - biofilm
+  - Monod kinetics
+references:
+  - type: software
+    title: PRT-DeepONet
+    year: 2025
+    license: GPL-3.0-or-later
+    authors:
+      - given-names: Yehoon
+        family-names: Kim
+        email: wnsla7323@naver.com
+        affiliation: >-
+          Jung Lab, Chungnam National University, Republic of Korea
+      - given-names: Heewon
+        family-names: Jung
+        email: hjung@cnu.ac.kr
+        affiliation: >-
+          Jung Lab, Chungnam National University, Republic of Korea
