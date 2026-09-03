@@ -42,6 +42,13 @@ def _resolve_params(param_names, params):
     return out
 
 
+# =============================================================================
+#  BLOCK 1.  WHAT TO DRAW
+#
+#  The rates are RECOMPUTED from the concentrations and the run's own
+#  parameters, not read from the file, so a figure can be made for a PREDICTED
+#  field where no solver ever wrote a rate.
+# =============================================================================
 def reaction_rates(conc, species, params, param_names):
     """Turn predicted concentrations into the reaction-rate fields.
 
@@ -71,6 +78,8 @@ def reaction_rates(conc, species, params, param_names):
     return R_bio, R_abio
 
 
+# The speed, not a component. A single component is signed and its sign is an
+# artefact of which way the axis points.
 def velocity_magnitude(vel):
     return None if vel is None else np.sqrt((np.asarray(vel, np.float32) ** 2).sum(0))
 
@@ -92,6 +101,13 @@ def _norm(panels):
     return out
 
 
+# =============================================================================
+#  BLOCK 2.  SCALING, SHARED
+#
+#  Panels that are meant to be compared get ONE colour scale. Per-panel limits
+#  make two very different fields look alike, which is the commonest way a
+#  figure of this kind misleads.
+# =============================================================================
 def shared_limits(*arrays):
     """(vmin, vmax) over every finite value in the given arrays."""
     vals = [np.asarray(a)[np.isfinite(a)] for a in arrays if a is not None]
@@ -102,6 +118,8 @@ def shared_limits(*arrays):
     return float(v.min()), float(v.max())
 
 
+# Defaults to the MIDDLE slice, not slice 0. Slice 0 is the inlet face, which
+# is open padding in most of these domains and shows nothing.
 def render_2d(material, panels, path, title, slice_axis=2, slice_index=None):
     """panels: list of (name, 3D array, cmap[, (vmin, vmax)]). Mid-plane slices."""
     import matplotlib; matplotlib.use("Agg")
@@ -156,6 +174,14 @@ def _grain_surface(ax, solid, color="#8d949d", alpha=0.30, offset=0):
         pass
 
 
+# =============================================================================
+#  BLOCK 3.  THREE DIMENSIONS
+#
+#  A scatter of pore voxels, thinned to max_points, with the grains drawn as a
+#  marching-cubes surface. Thinned because matplotlib will not draw a quarter of
+#  a million points at any useful speed, and the thinning is uniform so the
+#  picture stays representative.
+# =============================================================================
 def render_3d(material, panels, path, title, max_points=14000, cut=True, trim=3):
     """One 3D panel per field: grains translucent, field as a coloured point
     cloud through the half-cut pore space.

@@ -1,6 +1,8 @@
 # Licensing, attribution and citation
 
-PRT-DeepONet Studio, version 1.1. Released 31 August 2026.
+PRT-DeepONet Studio, version 1.2. Released 3 September 2026.
+
+Version 1.2 adds the velocity informed capability. Version 1.1, without it, is kept unchanged beside this one.
 
 This file explains who wrote what, under which terms each part may be used,
 and how to cite the work. The full legal text of the GNU General Public
@@ -28,6 +30,41 @@ application.
 
 Copyright (C) 2026 Shahram Asgari and Christof Meile, Meile Lab, University of
 Georgia.
+
+### The velocity informed extension
+
+The velocity operator, the pressure component U-Net and the three flow descriptors in
+this project are ports of code released by:
+
+| | |
+|---|---|
+| Hyegyeong Jo | hyegyeong6321@naver.com |
+| Heewon Jung | hjung@cnu.ac.kr |
+
+Chungnam National University, Republic of Korea. Copyright (C) 2025 Jung Lab, GNU
+General Public License version 3 or later, the same terms as the rest of this project.
+
+Released at github.com/hjunglab/PRT-DeepONet under `velocity-informed`, and described
+in Jo, Kim, Kim, Lim, Choi, Ryu and Jung, *PRT-DeepONet with Sequentially Coupled
+Velocity and Concentration Prediction for Pore-Scale Reactive Transport*, preprint
+SSRN 7388394.
+
+What is theirs, in this project:
+
+- `3D/model/velocity_model.py`, the two dimensional `PressureComponentUNet`,
+  `VelocityDeepONet` and `ConcentrationDeepONet` classes. Channel ladders, block counts,
+  layer widths, activation placement and the latent split are theirs unchanged, which is
+  why their released checkpoints load into these classes with no missing key.
+- `3D/tools/flow_features.py`, the two dimensional `uprm_map`, `mis_map`,
+  `_local_thickness`, the buffer painting and `dw2_map`.
+
+What is ours: the three dimensional forms of all of the above, the training and
+prediction scripts, the direct Laplace solve in `harmonic_pressure.py`, the integration
+with this project's HDF5 layout and switch machinery, and the tests.
+
+`3D/model/test_reference_parity.py` runs their own feature code beside ours on their
+bundled example domain and reports every value identical, including the full predicted
+velocity field. If you use switch D or the velocity operator, please cite their work.
 
 ### The two-dimensional work
 

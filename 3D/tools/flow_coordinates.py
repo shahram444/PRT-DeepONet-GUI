@@ -72,6 +72,14 @@ SOLID, WALL, PORE = 0, 1, 2
 
 
 # --------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 1.  THE SMALL PIECES
+#
+#  A pore mask, a mean speed and a normalised velocity. Every one of them is
+#  taken over PORE VOXELS ONLY. Averaging over the whole grid would make the
+#  same rock look slower at lower porosity, which is a property of the array
+#  and not of the flow.
+# =============================================================================
 def pore_mask(material):
     return np.asarray(material) == PORE
 
@@ -116,6 +124,20 @@ def wall_distance(material):
 
 
 # --------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 2.  THE TRAVEL TIME
+#
+#  Switch A's replacement for the geodesic distance: how long the FLOW takes to
+#  carry solute from the inlet to each voxel, rather than how far it is. Solved
+#  by the same neighbour relaxation the geodesic field uses, so the two are
+#  comparable, with the edge cost set by the local speed instead of by 1.
+#
+#  u_floor is what makes it finite. A dead-end pocket has a speed of essentially
+#  zero and would otherwise take infinite time to reach, so the speed is floored
+#  at a fraction of the mean. That floor IS the model of diffusion here, which
+#  is why switch A is expected to lose at low Peclet, where diffusion is the
+#  thing actually delivering the solute.
+# =============================================================================
 def travel_time(vel, material, u_floor=0.01, max_iter=4000, tol=1e-5,
                 inlet_axis=0, normalize=True, verbose=False):
     """Advective travel time from the inlet face, by upwind fast sweeping.
@@ -273,6 +295,13 @@ def travel_time(vel, material, u_floor=0.01, max_iter=4000, tol=1e-5,
 
 
 # --------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 3.  MAKING IT AN INPUT
+#
+#  The raw travel time spans orders of magnitude between a channel and a pocket,
+#  so it is squashed before the trunk ever sees it. A network fed the raw field
+#  spends its capacity on the dynamic range instead of on the transport.
+# =============================================================================
 def squash(tau):
     """tau / (1 + tau) — the form actually fed to the trunk.
 
@@ -320,6 +349,13 @@ def flow_fields(vel, material, u_floor=0.01, edt=None):
 
 
 # --------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 4.  THE SELF TEST
+#
+#  Run with --self-test. Built-in rather than in a separate file because these
+#  are properties of the functions above, not of a pipeline, and a test that
+#  ships inside the module cannot be left behind when the module moves.
+# =============================================================================
 def _self_test():
     """Two cases with a known answer, plus one realistic blob geometry."""
     ok = True

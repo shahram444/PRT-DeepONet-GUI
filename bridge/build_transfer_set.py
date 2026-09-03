@@ -2,7 +2,7 @@
 """
 build_transfer_set.py — 2D/ -> a 3D training file, for switch B.
 
-A thin wrapper over 3D/tools/ingest_2d.py that knows where the two halves of
+A thin wrapper over 3D/tools/build_transfer_set_2d_to_3d.py that knows where the two halves of
 this repository live, so you do not have to type paths.  Run it from anywhere:
 
     python build_transfer_set.py                     # 200 domains, 128x64x64
@@ -31,7 +31,18 @@ import argparse, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TWO_D = os.path.join(ROOT, "2D")
-INGEST = os.path.join(ROOT, "3D", "tools", "ingest_2d.py")
+# =============================================================================
+# BLOCK 1.  WHERE THE TWO HALVES OF THE PROJECT ARE
+#
+# The whole point of this wrapper is that you do not type these paths. It is
+# also the whole way it can break: the name below is a STRING, so a rename in
+# 3D/tools does not fail here until somebody runs it.
+#
+# That is exactly what happened. This pointed at 3D/tools/ingest_2d.py long
+# after that file had become build_transfer_set_2d_to_3d.py, and the script
+# exited on its first check with "cannot find" every time it was run.
+# =============================================================================
+INGEST = os.path.join(ROOT, "3D", "tools", "build_transfer_set_2d_to_3d.py")
 
 
 def main():
@@ -56,13 +67,28 @@ def main():
                          "morphology instead. Useful to test the pipeline.")
     a = ap.parse_args()
 
+    # =========================================================================
+    # BLOCK 2.  REFUSE EARLY, AND PRINT THE PATH
+    #
+    # Both checks name the path they looked at rather than saying "not found".
+    # While this wrapper was pointing at a renamed script, that path was the
+    # only thing in the message that identified the fault.
+    # =========================================================================
     if not os.path.exists(INGEST):
         sys.exit("cannot find %s\nIs this script still inside PRT-DeepONet/bridge/?"
                  % INGEST)
+    # Only needed on the real path; --synthetic makes its own domains.
     if a.synthetic is None and not os.path.isdir(TWO_D):
         sys.exit("cannot find %s\nUse --synthetic N to build a set without it."
                  % TWO_D)
 
+    # =========================================================================
+    # BLOCK 3.  BUILD THE COMMAND
+    #
+    # Every flag here exists on the receiving script. That is checked, not
+    # assumed: gui/test_gui_commands.py runs the same comparison for the
+    # window's buttons, and this wrapper follows the same rule by hand.
+    # =========================================================================
     cmd = [sys.executable, INGEST, "--out", a.out,
            "--target-shape", *map(str, a.target_shape),
            "--n-sets", str(a.n_sets), "--n-times", str(a.n_times),
@@ -71,16 +97,22 @@ def main():
            "--interface", a.interface]
     if a.species:
         cmd += ["--species", *a.species]
+    # --synthetic and --jung-dir are mutually exclusive in the receiving script,
+    # so exactly one of them is sent and never both.
     if a.synthetic is not None:
         cmd += ["--synthetic", str(a.synthetic)]
     else:
         cmd += ["--jung-dir", TWO_D, "--limit", str(a.limit)]
 
+    # The command is printed before it runs. Everything in this project follows
+    # that rule, so a wrapper is never a black box: copy the line and run it.
     print("$ " + " ".join(cmd), flush=True)
     r = subprocess.run(cmd)
     if r.returncode:
-        sys.exit(r.returncode)
+        sys.exit(r.returncode)      # the child already said what went wrong
 
+    # The next command, printed. The transfer set is useless on its own and the
+    # flag that consumes it is easy to get wrong.
     print("\nnext:")
     print("  python %s --data <3d.h5> --transfer-2d %s --transfer-2d-frac 0.3 --dim-free"
           % (os.path.join(ROOT, "3D", "model", "train.py"), a.out))

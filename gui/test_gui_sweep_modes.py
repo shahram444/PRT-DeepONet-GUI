@@ -21,6 +21,16 @@ sys.path.insert(0, HERE)
 
 from test_gui_commands import load_gui_module, parser_accepts     # noqa: E402
 
+# =============================================================================
+#  BLOCK 1.  WHAT IS BEING CHECKED
+#
+#  Three boxes on the dataset pages each have two states: a RANGE (a minimum and
+#  a maximum) or EXACT NUMBERS (a list). They are alternatives, and the command
+#  must carry one form or the other, never both and never neither.
+#
+#  Each row below is (the mode box, the list box, the two range flags, the list
+#  flag), so a fourth such box is one row here and no other change.
+# =============================================================================
 PAGES = ("build_dataset_3d.py", "build_dataset_2d.py")
 MODES = (("phi_mode", "phi_values", ("--phi-min", "--phi-max"), "--phi-values"),
          ("pe_mode", "pe_values", ("--pe-min", "--pe-max"), "--pe-values"),
@@ -36,6 +46,13 @@ def actions_with_modes(gui):
     return out
 
 
+# =============================================================================
+#  BLOCK 2.  DRIVING A PAGE THAT WAS NEVER DRAWN
+#
+#  The catalogue is built with tkinter stubbed, so a field has no variable until
+#  something makes one. The stand-in below is the smallest object Field.value()
+#  will accept: get and set, nothing else.
+# =============================================================================
 def set_field(act, key, value):
     f = next((x for x in act.fields if x.key == key), None)
     if f is None:
@@ -51,10 +68,19 @@ def set_field(act, key, value):
 def main():
     gui = load_gui_module()
     acts = actions_with_modes(gui)
+    # Zero pages is a pass, not a failure: it means no page has such a box.
     if not acts:
         print("no page has a range-or-exact-numbers box; nothing to check")
         return 0
 
+    # =========================================================================
+    # BLOCK 3.  BOTH HALVES OF EVERY BOX, ON EVERY PAGE THAT HAS ONE
+    #
+    # Four assertions per state, and the last two are the ones argparse cannot
+    # make. Switching to exact numbers must REMOVE --phi-min and --phi-max, not
+    # merely add --phi-values beside them: a command carrying both parses
+    # perfectly and then silently ignores one of them.
+    # =========================================================================
     bad = []
     checked = 0
     for key, act in acts:
@@ -89,6 +115,8 @@ def main():
                 why = parser_accepts(act.script, argv)
                 if why:
                     bad.append("%s: %s" % (where, why))
+            # Put it back. The action objects are shared across this loop, so a
+            # box left in the other state would change the next page's command.
             set_field(act, mode_key, "a range")
 
     print("=" * 68)

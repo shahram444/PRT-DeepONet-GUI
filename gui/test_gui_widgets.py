@@ -232,6 +232,27 @@ COVERED_ELSEWHERE = {
     "damkohler_abiotic": "the ABIOTIC Damkohler boxes",
     "damkohler_abiotic_min": "the Lowest ABIOTIC Damkohler box",
     "damkohler_abiotic_max": "the Highest ABIOTIC Damkohler box",
+    # THE SIX BELOW WERE THIS CHECK BEING WRONG, NOT THE WINDOW BEING SHORT.
+    #
+    # Every one of them is on the two dataset pages already, in the
+    # "range or exact numbers" boxes: choose a range and the page sends
+    # --phi-min and --phi-max, choose exact numbers and it sends --phi-values
+    # instead. The same for Peclet and for both Damkohler numbers.
+    #
+    # They were reported as unreachable because this check looks only at fields
+    # carrying a settings NAME, the ones that become --set name=value. These
+    # boxes do not: they emit their own flags directly, which is why they are
+    # claimed here like every other dedicated box.
+    #
+    # That they really are sent, and that choosing one form removes the other's
+    # flags rather than sending both, is checked separately and by measurement
+    # in test_gui_sweep_modes.py.
+    "porosity_min": "the Lowest porosity box, in the range/exact pair",
+    "porosity_max": "the Highest porosity box, in the range/exact pair",
+    "porosity_values": "the exact-numbers half of the porosity box",
+    "peclet_values": "the exact-numbers half of the Peclet box",
+    "damkohler_values": "the exact-numbers half of the BIOTIC Damkohler box",
+    "damkohler_abiotic_values": "the exact-numbers half of the ABIOTIC Damkohler box",
     # DELIBERATELY NOT IN THE WINDOW. You choose a Peclet and the pressure
     # gradient that produces it is derived, per rock, and printed. Offering a
     # pressure box as well would be two controls for one thing, and the one

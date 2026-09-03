@@ -51,3 +51,13 @@ chemicals in it.
 The numbers in the demo campaign these came from are constructed rather than
 simulated. The input files themselves are not: they are what a real run of
 this chemistry would be given.
+
+## Nothing here is needed for the flow capability
+
+Switch D and the velocity operator read the geometry out of a dataset and work
+everything else out themselves. There is no extra input file to write, and no setting
+in `example_settings_2d.xml` that turns them on: they are command line flags on
+`train.py` and on `train_velocity.py`. The one number you do have to get right is the
+open buffer at each end of the flow axis, and it is a flag rather than a setting
+because it describes the campaign you already have rather than one you are about to
+run.

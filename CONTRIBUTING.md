@@ -58,6 +58,20 @@ must not happen is a plausible number appearing where no number was measured.
 wrong and how it was found, because that is the part nobody can reconstruct
 later from the code.
 
+## Ported code is not ours to refactor
+
+`3D/model/velocity_model.py` and the two dimensional half of
+`3D/tools/flow_features.py` are ports of code released by the Jung Lab. Their channel
+ladders, block counts, layer widths and the latent split reproduce the release exactly,
+and that is load bearing: their trained checkpoints load into these classes, and
+`3D/model/test_reference_parity.py` checks our descriptors against theirs value for
+value on their own example domain.
+
+Change any of it and both stop being true, and every comparison with their published
+numbers silently becomes a comparison with our reimplementation. If you need different
+behaviour, add it beside the port rather than inside it. The three dimensional forms
+are ours and are fair game.
+
 ## The two halves have different owners
 
 `2D/` is the published release of Kim and Jung, kept exactly as published and

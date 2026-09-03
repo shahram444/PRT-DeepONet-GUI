@@ -58,11 +58,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from deeponet_model import PRT_DeepONet3D, count_parameters                # noqa: E402
 
 
+# =============================================================================
+#  BLOCK 1.  THEIR KEY NAMES, TO OURS
+#
+#  Both networks have the same eight trunk layers in the same order, so the
+#  mapping is POSITIONAL: their trunk_net.0 is our trunk.first, their
+#  trunk_net.14 is our trunk.last, and the even indices between are our hidden
+#  list in order. The odd indices are activations and carry no weights.
+#
+#  A key that matches nothing is dropped silently HERE and reported by the
+#  caller, which counts what arrived. Raising on the first unknown key would
+#  stop the conversion on a difference that may not matter.
+# =============================================================================
 def remap(src):
     """His key names -> ours.  Both networks have the same eight trunk layers,
     so the mapping is positional and complete."""
     out = {}
+    # 0 and 14 are the first and last Linear in their Sequential. The odd
+    # indices between are activations and hold no weights at all.
     trunk_pos = {0: "trunk.first", 14: "trunk.last"}
+    # Six hidden layers, at the even indices, in order.
     for i, n in enumerate((2, 4, 6, 8, 10, 12)):
         trunk_pos[n] = "trunk.hidden.%d" % i
     for k, v in src.items():
@@ -77,6 +92,10 @@ def remap(src):
             if tgt:
                 out["%s.%s" % (tgt, tail)] = v
         elif k == "bias":
+            # Deliberately dropped. Theirs is one number for one chemical; ours
+            # is one per species. Broadcasting it would start every chemical at
+            # the same offset, which is a wrong initialisation dressed up as a
+            # loaded weight.
             pass                       # his is (1,), ours is (n_species,)
     return out
 

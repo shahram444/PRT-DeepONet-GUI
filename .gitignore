@@ -1,0 +1,45 @@
+# ---- Simulation output --------------------------------------------------
+# Everything the code produces goes under work/ and is regenerated, never
+# committed.
+work/
+*.h5
+*.vti
+*.vtk
+dataset_fields/
+predictions/
+figures/
+
+# ---- Trained checkpoints produced locally --------------------------------
+# The three published 2D checkpoints in 2D/parameters/ are committed on
+# purpose; anything you train yourself is not.
+3D/model/*.pt
+3D/model/checkpoints/
+
+# ---- Local Python environment --------------------------------------------
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ---- Python bytecode ------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- The 3000 loose domain files -----------------------------------------
+# They ship as 2D/Domains/Input_domains.zip instead.
+2D/Domains/*.dat
+
+# ---- Staging and scratch --------------------------------------------------
+_to_delete/
+*.bak
+*.tmp
+*.log
+
+# ---- Editors and operating systems ---------------------------------------
+.vscode/
+.idea/
+.ipynb_checkpoints/
+Thumbs.db
+desktop.ini
+.DS_Store

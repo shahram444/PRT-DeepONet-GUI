@@ -62,7 +62,17 @@ def main():
                     help="reuse checkpoints already in --out and only evaluate")
     a = ap.parse_args()
 
+    # =========================================================================
+    # BLOCK 1.  ONE BASE COMMAND, ONE EXTRA LIST PER CONFIGURATION
+    #
+    # Every run below is train.py with the SAME base arguments and a different
+    # tail. That is the whole design: a comparison is only a comparison if the
+    # only thing that differs between the rows is the thing being compared, and
+    # building each command by hand is how that stops being true.
+    # =========================================================================
     if a.quick:
+        # Three epochs on 512 points settles nothing about accuracy. It answers
+        # the only question --quick is for: does the whole sweep run to the end?
         a.epochs, a.batch_size, a.n_points, a.workers = 3, 2, 512, 0
 
     os.makedirs(a.out, exist_ok=True)
@@ -77,6 +87,9 @@ def main():
         ("flow-both", ["--flow-proxy", "--flow-mode", "both"]),
         ("dim-free", ["--dim-free"]),
     ]
+    # The 2D rows need a transfer set. Without one they are LEFT OUT rather than
+    # run on nothing, so a missing file costs you rows in the table and not a
+    # row of meaningless numbers.
     if a.data_2d:
         configs += [
             ("dim-free+2D", ["--dim-free", "--transfer-2d", a.data_2d,
@@ -107,6 +120,17 @@ def main():
         configs.append(("dim-free+2Dpre", []))
 
     # ---- evaluate everything on the same held-out geometries ---------------
+    # =========================================================================
+    # BLOCK 2.  EVALUATE THEM ALL AT ONCE, ON THE SAME ROCKS
+    #
+    # One evaluate.py call over every checkpoint, not one call each. The split
+    # is derived from the dataset and the seed, so separate calls would agree
+    # anyway, but a single call cannot silently stop agreeing.
+    #
+    # A configuration whose training failed has no best.pt and is dropped here
+    # rather than crashing the comparison; the table then shows which rows are
+    # missing, which is the useful failure.
+    # =========================================================================
     pairs = ["%s=%s" % (n, os.path.join(a.out, n, "best.pt")) for n, _ in configs
              if os.path.exists(os.path.join(a.out, n, "best.pt"))]
     run([sys.executable, os.path.join(HERE, "evaluate.py"), "--data", a.data,
@@ -126,11 +150,22 @@ def summarise(csv_path, out):
     rows = list(_csv.DictReader(open(csv_path)))
     if not rows:
         return
+    # =========================================================================
+    # BLOCK 3.  THE PECLET BREAKDOWN
+    #
+    # A single average hides the answer. The claim being tested is that the flow
+    # field wins at high Peclet and loses at low, so the number that settles it
+    # is the split, not the mean.
+    # =========================================================================
+    # Found by name, case insensitively. A dataset with no Pe column still gets
+    # the overall table rather than an exception.
     pe_key = next((k for k in rows[0] if k.lower() == "pe"), None)
     tags = sorted({r["tag"] for r in rows})
 
     def mean(rs):
         v = [float(r["rmse_mean"]) for r in rs]
+        # NaN for an empty band, never 0.0, which would print as the best score
+        # in the table for a band that holds no runs at all.
         return sum(v) / len(v) if v else float("nan")
 
     lines = []

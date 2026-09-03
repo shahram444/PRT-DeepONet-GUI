@@ -1,20 +1,107 @@
 # GeometryAware3D - the PRT-DeepONet-3D side
 
+**Shahram Asgari and Christof Meile, Meile Lab, Department of Marine Sciences,
+University of Georgia.** Everything in this folder is ours, apart from the two
+dimensional velocity classes and flow descriptors noted in `../LICENSING.md`.
+
 Everything that is not CompLaB. CompLaB itself is a separate C++ project; what
 lives here builds its input, reads its output, and trains on the result.
 
+## Every file in here, and what it is for
+
+Lines are given so you can tell a one-page utility from a solver. **NEW** and
+**CHANGED** mark what the flow work added or touched.
+
 ```
-tools/            generate geometries, build and collect a CompLaB campaign,
-                  the two Python simulators, the demo generator, the tests
-model/            the 3D PRT-DeepONet: architecture, training, inference, evaluation
-                    deeponet_model.py      the network
-                    train.py               training loop
-                    train.sbatch           Slurm submit (set your lab partition)
-                    predict.py             run on a NEW geometry, no simulation
-                    evaluate.py            held-out accuracy and the paper's figures
-                    make_figures.py        the 2D and 3D flow / biotic / abiotic rendering
-                    run_ablation_sweep.py  one model per switch configuration
-SWITCHES.md       the full write-up of the three switches
+3D/
+├── README.md                              this file
+├── SWITCHES.md                            the switches and the flow pipeline, in full
+│
+├── tools/    geometry, simulation, datasets
+│   │
+│   │  ---- the two Python simulators ----------------------------------------
+│   ├── prtlb_2d.py                 2566   flow, transport and reactions in 2D
+│   ├── prtlb_3d.py                 2535   the same in 3D. The transport and reaction
+│   │                                      code is word for word identical to the 2D
+│   │                                      file, and test_flow_solvers.py checks it
+│   ├── settings_and_units.py       2974   every physical number in one place, with
+│   │                                      its units and its provenance
+│   │
+│   │  ---- making pore structures -------------------------------------------
+│   ├── build_geometry_3d.py         608   Gaussian random media at a chosen porosity
+│   ├── build_toy_pack_2d.py         279   a small 2D packing, for tests and demos
+│   │
+│   │  ---- building datasets ------------------------------------------------
+│   ├── build_dataset_2d.py          973   runs the 2D simulator over a sweep of
+│   │                                      conditions and writes one dataset.h5
+│   ├── build_dataset_3d.py          934   the same in 3D
+│   ├── build_practice_dataset.py    203   a small but REAL dataset in five seconds
+│   ├── make_demo_complab.py         739   writes a demo campaign in the exact layout
+│   │                                      finished CompLaB output has. The numbers are
+│   │                                      constructed and it says so
+│   │
+│   │  ---- the CompLaB interface --------------------------------------------
+│   ├── complab_campaign.py          585   writes the input files a cluster run needs,
+│   │                                      in batches, and tracks and retries them
+│   ├── collect_complab_output.py    718   a campaign this project set up -> dataset.h5  CHANGED
+│   ├── collect_foreign_complab.py  1686   runs somebody else set up, by hand, with or
+│   │                                      without their input files beside them        CHANGED
+│   ├── import_2d_simulations.py     396   2D simulation output somebody sent you
+│   │
+│   │  ---- 2D into 3D, for switch B -----------------------------------------
+│   ├── build_transfer_set_2d_to_3d.py 458  extrudes 2D domains into 3D blocks
+│   ├── load_pretrained_2d_weights.py  207  converts the published 2D weights into ours
+│   │
+│   │  ---- what the model reads ---------------------------------------------
+│   ├── dataset_reader.py            597   the PyTorch Dataset. THE HINGE OF THE
+│   │                                      PROJECT: the one file that knows both what
+│   │                                      an .h5 holds and what the model wants, so
+│   │                                      every switch passes through it            CHANGED
+│   ├── flow_coordinates.py          437   travel time and stream coordinates, switch A
+│   │
+│   │  ---- the flow descriptors ---------------------------------------------
+│   ├── flow_features.py             573   MIS, UPRM and the squared wall distance,
+│   │                                      in two and three dimensions                   NEW
+│   ├── harmonic_pressure.py         337   the sparse Laplace solve that gives the
+│   │                                      velocity operator's trunk its prior           NEW
+│   ├── add_flow_features.py         231   puts all three into a dataset you already
+│   │                                      have, without recollecting it                 NEW
+│   │
+│   │  ---- the tests --------------------------------------------------------
+│   ├── test_flow_solvers.py         402   the 2D and 3D solvers against each other
+│   ├── test_three_switches.py       263   proves switches-off is bit-identical to the
+│   │                                      original, by re-implementing it inside itself
+│   └── test_documented_numbers.py   418   every number quoted in the docs, against
+│                                          the code that is supposed to produce it
+│
+└── model/    the neural operator
+    │
+    │  ---- concentration ----------------------------------------------------
+    ├── deeponet_model.py            200   the architecture: CNN branch, dense branch,
+    │                                      trunk, FiLM
+    ├── train.py                     372   the training loop, and every feature flag     CHANGED
+    ├── evaluate.py                  535   scores a checkpoint on structures it never saw
+    ├── predict.py                   485   answers about one new structure, in under a
+    │                                      second, with no simulation
+    ├── run_ablation_sweep.py        204   trains every switch configuration and
+    │                                      compares them on the SAME held-out rocks
+    ├── make_figures.py              273   the figures, from a finished run
+    ├── train.sbatch                       Slurm submit. Set your own partition
+    │
+    │  ---- velocity --------------------------------------------------------
+    ├── velocity_model.py            665   the velocity operator, the pressure U-Net,
+    │                                      the ROI Huber loss and the divergence
+    │                                      penalty, in 2D and 3D                         NEW
+    ├── train_velocity.py            538   trains the operator                           NEW
+    ├── predict_velocity.py          412   runs it and writes samples/velocity_pred
+    │                                      beside samples/velocity, never over it        NEW
+    │
+    │  ---- the tests -------------------------------------------------------
+    ├── test_flow_pipeline.py        394   the whole velocity path end to end, on a
+    │                                      dataset it builds for itself. 33 checks       NEW
+    └── test_reference_parity.py     244   our descriptors and our predicted field
+                                           against THEIRS, on their own bundled
+                                           domain, value by value                        NEW
 ```
 
 Nothing generated is kept here. Geometries, datasets, checkpoints and figures
@@ -23,13 +110,19 @@ are all written under `work/` at the project root.
 A per-file guide to both folders is in `docs/`: `GUIDE_3D_tools.docx` and
 `GUIDE_3D_model.docx`.
 
+**Every file marked NEW or CHANGED says so at the top of itself**, in a block headed
+`CHANGED FROM THE 2D VERSION`: where the code came from, what their version does, and
+what was changed and why.
+
 ---
 
 
-## The three feature switches  (all default OFF)
+## The three feature switches, and the flow pipeline  (all default OFF)
 
-Added after the July meeting.  With all three off the code behaves exactly as it
-did before; `tools/test_three_switches.py` proves it bit-exactly.  Full documentation
+A, B and C were added after the July meeting; the flow pipeline after the velocity
+informed follow-up. It is listed here because it is a flag on the same script, not
+because it works like the other three.
+With all of them off the code behaves exactly as it did before; `tools/test_three_switches.py` proves it bit-exactly.  Full documentation
 in **SWITCHES.md**.
 
 | switch | flag | what it does |
@@ -37,6 +130,16 @@ in **SWITCHES.md**.
 | A | `--flow-proxy` | use the FLOW FIELD instead of the geodesic distance. Trunk gets the advective travel time `tau`, branch gets the normalised velocity. This is Christof's "can we just take the flow field instead of the GDF?" |
 | B | `--transfer-2d H5` | mix extruded 2D domains into training. An extruded 2D domain is an EXACT 3D problem, so this is free training data, not an approximation. Build the file with `tools/build_transfer_set_2d_to_3d.py`. |
 | C | `--dim-free` | A and B together: the flow-space trunk `(t, dwall, tau)`, which has the SAME number of inputs in 2D and 3D and therefore transfers with no modification. |
+| the flow pipeline | `--velocity-informed` | give the CONCENTRATION branch the velocity field as extra image channels and leave the trunk alone. `simulated` uses the field the solver produced, `predicted` uses one from the velocity operator. This is the published follow-up, and it is NOT switch A. |
+
+**The flow pipeline is reached differently from the other three.** A, B and C are tick boxes on
+the Train page. D is a panel: **The flow field -> The flow pipeline**, in the sidebar,
+in both modes. Six shared boxes down the left so every step reads the same dataset, five
+cards down the right, each with its own state, its own command line and its own Run
+button, and one button that runs them in order and stops at the first failure. The flag
+on `train.py` is unchanged; only the way in has moved. The reason is that A, B and C
+each change one training run and need nothing prepared, while D needs three earlier
+stages to have run against the same dataset first.
 
 ```
 python tools/build_practice_dataset.py --out /tmp/test3d.h5     # a small but real dataset

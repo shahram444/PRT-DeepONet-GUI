@@ -97,8 +97,13 @@ def load_gui_module():
     tk.END = "end"
     tk.TclError = Exception
     ttk = types.ModuleType("tkinter.ttk")
+    # Scrollbar, Label and Button are here because the flow pipeline panel
+    # builds a scrolling column of cards. A stub set that is missing one
+    # widget fails as an AttributeError deep inside a constructor, which reads
+    # like a bug in the window rather than a gap in this list.
     for name in ("Combobox", "Notebook", "Progressbar", "Style", "Treeview",
-                 "Separator", "Frame"):
+                 "Separator", "Frame", "Scrollbar", "Label", "Button",
+                 "Checkbutton", "Entry"):
         setattr(ttk, name, type(name, (), {"__init__": lambda self, *a, **k: None,
                                            "__getattr__": lambda self, n: (lambda *a, **k: None)}))
     tk.ttk = ttk
@@ -431,6 +436,82 @@ def _dep_keys(dep):
 
 
 # ---------------------------------------------------------------------------
+#  The flow pipeline panel
+# ---------------------------------------------------------------------------
+def flow_pipeline(gui, A):
+    """The five commands the flow pipeline panel emits, against the real parsers.
+
+    The panel is a Tk widget, so nothing inside it can be reached here. That is
+    why its command building lives in flow_step_command(), a free function that
+    takes plain values: this can call it with no display and check what comes
+    out, which is the whole reason it was pulled out of the class.
+
+    Two things are checked, not one. First that each command parses, the same
+    question asked of every button. Second that the pipeline is COHERENT: that
+    every step points at the same dataset, that step 5 reads the field step 4
+    was told to write, and that step 4 was in fact told to write it. A step
+    that parses perfectly and reads the wrong file is the failure this pipeline
+    is most likely to have, and argparse cannot see it.
+    """
+    fails = []
+    data = "/tmp/x.h5"
+    out = "/tmp/flowrun"
+    cmds = {}
+    print("The flow pipeline panel")
+    for key in [s[4] for s in gui.FLOW_STEPS]:
+        try:
+            _a, argv = gui.flow_step_command(A, key, data=data, out=out,
+                                             buffer="10", condition="pe",
+                                             epochs="3", geom=True)
+        except Exception as e:                                 # noqa: BLE001
+            fails.append((key, "", "could not build the command: %s" % e))
+            print("  FAIL   %-18s could not build the command" % key)
+            continue
+        cmds[key] = argv[3:]
+        why = parser_accepts(A[key].script, argv[3:])
+        print("  %-6s %-18s %s" % ("ok" if not why else "FAIL", key,
+                                   " ".join(argv[3:])[:90]))
+        if why:
+            fails.append((key, " ".join(argv[3:]), why))
+
+    def has(key, flag, value=None):
+        a = cmds.get(key, [])
+        if flag not in a:
+            return False
+        if value is None:
+            return True
+        i = a.index(flag)
+        return i + 1 < len(a) and a[i + 1] == value
+
+    checks = [
+        ("every step reads the same dataset",
+         all(has(k, "--data", data) for k in cmds)),
+        ("step 4 is told to write the field back",
+         has("predict_velocity", "--write-back")),
+        ("step 4 reads the checkpoint step 3 writes",
+         has("predict_velocity", "--checkpoint",
+             os.path.join(out, "velocity_operator", "best.pt"))),
+        ("step 2 asks for the simulated field",
+         has("train_flow_sim", "--velocity-informed", "simulated")),
+        ("step 5 asks for the predicted field",
+         has("train_flow_pred", "--velocity-informed", "predicted")),
+        ("the two training steps write to different folders",
+         (cmds.get("train_flow_sim", []) and cmds.get("train_flow_pred", [])
+          and cmds["train_flow_sim"][cmds["train_flow_sim"].index("--out") + 1]
+          != cmds["train_flow_pred"][cmds["train_flow_pred"].index("--out") + 1])),
+        ("the pore size maps reach both training steps",
+         has("train_flow_sim", "--geom-features")
+         and has("train_flow_pred", "--geom-features")),
+    ]
+    for name, ok in checks:
+        print("  %-6s %s" % ("ok" if ok else "FAIL", name))
+        if not ok:
+            fails.append(("pipeline", name, "the steps do not line up"))
+    print()
+    return fails
+
+
+# ---------------------------------------------------------------------------
 def main():
     gui = load_gui_module()
     A = gui.build_actions()
@@ -501,6 +582,8 @@ def main():
 
     # ---------------------------------------------------------- multi-value
     narg_fails, narg_notes = nargs_mismatches(A)
+    flow_fails = flow_pipeline(gui, A)
+    fails += flow_fails
 
     print("=" * 72)
     print("GUI COMMAND CHECK")

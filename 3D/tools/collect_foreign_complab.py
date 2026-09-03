@@ -1,4 +1,39 @@
 #!/usr/bin/env python3
+# =============================================================================
+# CHANGED FROM THE 2D VERSION
+#
+#   WHAT CHANGED HERE, IN ONE LINE
+#     While collecting a campaign this file now also writes the three flow
+#     descriptors the flow pipeline wants: geom/mis, geom/uprm and geom/dw2.
+#
+#   WHERE THE DESCRIPTORS CAME FROM
+#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
+#     ported into 3D/tools/flow_features.py, which is what is called below.
+#     MIS is how wide the pore is at each voxel. UPRM is how wide the NARROWEST
+#     THROAT between the inlet and that voxel is. dw2 is the squared wall
+#     distance, scaled to [0, 1].
+#
+#   WHY THEY ARE COMPUTED HERE RATHER THAN AT TRAINING TIME
+#     They depend on the GEOMETRY ALONE, not on the run conditions. A campaign
+#     of 500 runs over 20 rocks has 20 answers, not 500, and computing them
+#     once at collection costs about a second a rock. Doing it in the training
+#     loop would redo the same work on every epoch of every run.
+#
+#   THE TWO NEW FLAGS
+#     --no-flow-features   skip them entirely. The dataset stays perfectly
+#                          usable; add_flow_features.py can put them in later
+#                          without recollecting anything.
+#     --flow-buffer N      how many OPEN voxels pad each end of the flow axis.
+#                          This must match your campaign: 10 for the published
+#                          2D set, 5 for the geometries this project generates,
+#                          0 for none. Get it wrong and the MIS treatment
+#                          measures your padding instead of your rock.
+#
+#   IF THE DESCRIPTOR STEP FAILS
+#     It is caught, reported by name, and collection continues. A missing
+#     descriptor is RECORDED, never invented, which is the same rule the rest
+#     of this collector already follows for every other absent field.
+# =============================================================================
 """
 collect_foreign_complab.py — CompLaB output that was NOT set up by
 complab_campaign.py, collected into the one dataset.h5 everything else reads.
@@ -1076,6 +1111,15 @@ def main():
     g.add_argument("--no-inputs", action="store_true",
                    help="do not look for the input files at all")
 
+    g = p.add_argument_group("the flow descriptors")
+    g.add_argument("--no-flow-features", action="store_true",
+                   help="skip MIS and UPRM. They depend only on the geometry and cost "
+                        "about a second a rock; add_flow_features.py can add them later.")
+    g.add_argument("--flow-buffer", type=int, default=10,
+                   help="open buffer voxels at each end of the flow axis, for the MIS "
+                        "treatment. Must match your campaign's padding: 10 for the "
+                        "published 2D set, 5 for our generator, 0 for none.")
+
     g = p.add_argument_group("checks")
     g.add_argument("--max-conc", type=float, default=1.0,
                    help="reject a run whose concentration exceeds this")
@@ -1465,6 +1509,54 @@ def main():
         gg.create_dataset("material", data=np.stack(mats), compression="gzip")
         gg.create_dataset("gdf", data=np.stack(gdfs), compression="gzip")
         gg.create_dataset("edt", data=np.stack(edts), compression="gzip")
+
+        # ---- the flow descriptors ---------------------------------------------
+        # MIS and UPRM depend only on the geometry, so they are computed here, once
+        # per rock, rather than on every training run. --no-flow-features skips them
+        # if the extra second per rock matters; add_flow_features.py can put them in
+        # afterwards without recollecting anything.
+        if not getattr(args, "no_flow_features", False):
+            try:
+                import flow_features as _ff
+                _buf = int(getattr(args, "flow_buffer", 10))
+                _mis, _up, _e2, _pores = [], [], [], []
+                print("  computing MIS and UPRM for %d rocks (buffer %d)" % (G, _buf))
+                for _m in mats:
+                    _p = _ff.pore_mask_from_material(_m, pore_code)
+                    _pores.append(_p)
+                    _f = _ff.all_features(_p, buf=_buf)
+                    _mis.append(_f["mis"]); _up.append(_f["uprm"])
+                    _e = _ff.distance_transform_edt(_p).astype(np.float32)
+                    _e2.append(_e * _e)
+                _mis = np.stack(_mis); _up = np.stack(_up); _e2 = np.stack(_e2)
+                _mmu, _msd = _ff.zscore_stats(list(_mis))
+                _umu, _usd = _ff.zscore_stats(list(_up))
+                _all = np.concatenate([_e2[i][_pores[i]] for i in range(G)])
+                _lo, _hi = float(_all.min()), float(_all.max())
+                if _hi <= _lo:
+                    _hi = _lo + 1.0
+                _dw2 = np.zeros_like(_e2)
+                for i in range(G):
+                    _pp = _pores[i]
+                    _d = np.zeros(_pp.shape, np.float32)
+                    _d[_pp] = np.clip((_e2[i][_pp] - _lo) / (_hi - _lo), 0, 1)
+                    _dw2[i] = _d
+                for _n, _a, _at in (("mis", _mis, {"mis_mu": _mmu, "mis_sd": _msd}),
+                                    ("uprm", _up, {"uprm_mu": _umu, "uprm_sd": _usd}),
+                                    ("dw2", _dw2, {"dw2_min": _lo, "dw2_max": _hi})):
+                    _d = gg.create_dataset(_n, data=_a.astype(np.float32),
+                                           compression="gzip")
+                    for _k, _v in _at.items():
+                        _d.attrs[_k] = float(_v)
+                    _d.attrs["buffer"] = _buf
+                h.attrs["flow_features_buffer"] = _buf
+                print("  MIS mean %.3f sd %.3f | UPRM mean %.3f sd %.3f (voxels)"
+                      % (_mmu, _msd, _umu, _usd))
+            except Exception as _e:
+                # A missing descriptor is recorded, never invented. The dataset is
+                # still perfectly usable without the flow pipeline.
+                print("  NOTE: flow descriptors not written (%s). Add them later with "
+                      "add_flow_features.py." % _e)
 
         sg = h.create_group("samples")
         sg.create_dataset("geom_index",

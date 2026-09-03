@@ -33,6 +33,13 @@ PORE = 2
 FAIL = []
 
 
+# =============================================================================
+#  BLOCK 1.  REPORTING
+#
+#  Every check prints its own line whether it passes or fails, and the failures
+#  are collected for the exit code. A test that only speaks up when something is
+#  wrong gives you no way to tell "all fine" from "never ran".
+# =============================================================================
 def check(name, cond, detail=""):
     print("  %-58s %s %s" % (name, "PASS" if cond else "FAIL", detail))
     if not cond:
@@ -87,6 +94,14 @@ def original_getitem(h5path, s, t, distance, with_velocity, with_time, n_points,
 
 
 # ---------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 2.  THE CHECK THIS FILE EXISTS FOR
+#
+#  Every combination of distance and velocity, compared against the verbatim
+#  copy above, sample by sample and value by value. Not "close": IDENTICAL.
+#  Anything less would let a rounding change pass as a match, and the promise
+#  being kept here is that a v1.1 result reproduces exactly in v1.2.
+# =============================================================================
 def test_off_is_unchanged(path):
     print("\n[1] ALL SWITCHES OFF reproduces the original code exactly")
     for distance in ("gdf", "edt", "none"):
@@ -127,6 +142,13 @@ def test_off_is_unchanged(path):
 
 
 # ---------------------------------------------------------------------------
+# =============================================================================
+#  BLOCK 3.  THE SWITCHES ON
+#
+#  Shapes first, then values, then a real forward and backward pass. Shapes
+#  alone are not enough: a tensor of the right size full of NaN passes every
+#  shape assertion ever written.
+# =============================================================================
 def test_switch_shapes(path):
     print("\n[2] every switch combination builds the right shapes")
     cases = [
@@ -216,6 +238,9 @@ def test_source_tag(path):
           "%d train / %d test samples" % (len(tr), len(te)))
 
 
+# =============================================================================
+#  BLOCK 4.  RUNNING THEM
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="/tmp/test3d.h5")

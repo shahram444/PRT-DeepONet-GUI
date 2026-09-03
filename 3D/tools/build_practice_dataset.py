@@ -22,11 +22,20 @@ from prtlb_3d import (SOLID, WALL, PORE, solve_adr, check_physics,   # noqa: F40
                       keep_inlet_connected, assert_finite_distance)
 
 
+# =============================================================================
+#  BLOCK 1.  A REAL PORE STRUCTURE, SMALL
+#
+#  Gaussian random media thresholded at the porosity, which is the same
+#  morphology build_geometry_3d.py makes, just tiny. That is what makes this a
+#  practice dataset rather than a fake one: the numbers below are solved, not
+#  invented, and the only thing shrunk is the grid.
+# =============================================================================
 def geometry(shape, phi, seed):
     rng = np.random.default_rng(seed)
+    # mode="wrap" so no artificial correlation is introduced at the edges.
     f = ndimage.gaussian_filter(rng.standard_normal(shape), 2.0, mode="wrap")
     g = np.where(f > np.quantile(f, 1.0 - phi), PORE, SOLID).astype(np.uint8)
-    g[:3] = g[-3:] = PORE
+    g[:3] = g[-3:] = PORE       # three open layers at each end: inlet and outlet
     g[:, 0, :] = g[:, -1, :] = g[:, :, 0] = g[:, :, -1] = WALL
     # Keep what the inlet can reach, not what is biggest -- and do it AFTER
     # the side walls go on, because sealing a face can disconnect pore space
@@ -35,11 +44,22 @@ def geometry(shape, phi, seed):
     return g
 
 
+# =============================================================================
+#  BLOCK 2.  THE GEODESIC DISTANCE, BY NEIGHBOUR RELAXATION
+#
+#  Deliberately not scikit-fmm. Every dataset in this project is built this way,
+#  so the practice file has to be built this way too, or a model trained on it
+#  meets a slightly different distance field on the real data.
+# =============================================================================
 def geodesic(g):
     """Geodesic distance from the inlet through pore space, in voxels."""
     inf = np.float32(1e9)
     d = np.where(g == PORE, inf, np.nan).astype(np.float32)
     d[0][g[0] == PORE] = 0.0
+    # An upper bound on how many sweeps a path can need, not a tuned number: a
+    # geodesic path cannot be longer than a few times the domain length. The
+    # loop breaks as soon as nothing changes, so the bound only ever stops a
+    # pathological case from running forever.
     for _ in range(4 * g.shape[0]):
         prev = d.copy()
         for ax in range(3):

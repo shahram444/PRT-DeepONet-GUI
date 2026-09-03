@@ -98,6 +98,14 @@ def main():
         a.n_geom = max(4, a.n_geom // 2)
         a.n_sets = max(2, a.n_sets // 2)
 
+    # =========================================================================
+    # BLOCK 1.  WHERE EVERYTHING GOES
+    #
+    # Two things come out of this script and they must not be mixed: a training
+    # set, and a handful of structures that are NOT in it. Predicting on a
+    # structure the network trained on tells you nothing, and the easiest way
+    # to do that by accident is to keep both in one folder.
+    # =========================================================================
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     pred_dir = os.path.join(out, "predict_me")
@@ -110,6 +118,13 @@ def main():
     print("1/2  training set: %d structures x %d parameter sets"
           % (a.n_geom, a.n_sets))
     print("=" * 70)
+    # =========================================================================
+    # BLOCK 2.  THE TRAINING SET
+    #
+    # Not built here. It shells out to build_dataset_2d.py, the same generator
+    # a real campaign uses, so this pack exercises the real path rather than a
+    # simplified copy of it that could drift.
+    # =========================================================================
     cmd = [sys.executable, os.path.join(HERE, "build_dataset_2d.py"),
            "--out", train_h5, "--n-geom", str(a.n_geom),
            "--n-sets", str(a.n_sets), "--n-times", str(a.n_times),
@@ -128,6 +143,13 @@ def main():
           % a.n_predict)
     print("=" * 70)
     # a different seed stream, so these cannot collide with the training set
+    # =========================================================================
+    # BLOCK 3.  THE HELD-OUT STRUCTURES
+    #
+    # A DIFFERENT SEED STREAM, offset far enough that it cannot overlap the
+    # training generator's. Reusing the seed would produce the same rocks and
+    # quietly turn the honest test into a memorisation check.
+    # =========================================================================
     rng = np.random.default_rng(a.seed + 100000)
     made = 0
     names = "ABCDEFGH"
@@ -135,9 +157,13 @@ def main():
         phi = 0.58 + 0.22 * rng.random()
         g = blob_2d((nx, ny), phi, rng, sigma=3.0)
         g, _ = keep_spanning_cluster(g)
+        # Rejected, not repaired. A non-percolating rock has no flow to predict,
+        # and nudging the porosity until one appears biases the whole set.
         if not percolates(g):
             continue
         nm = names[made]
+        # The flow is solved and stored beside each held-out rock, so a
+        # prediction run needs no solver of its own.
         v = stokes_d2q9(g, nit=a.stokes_iters)
         np.savez_compressed(
             os.path.join(pred_dir, "geom_%s.npz" % nm),

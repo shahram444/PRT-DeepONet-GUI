@@ -62,6 +62,17 @@ DA_KEYS = ["da", "damkohler", "da_number", "da_bio"]
 T_KEYS = ["t", "time", "t_norm", "times"]
 
 
+# =============================================================================
+#  BLOCK 1.  FINDING THINGS IN SOMEBODY ELSE'S FILE
+#
+#  Nothing here assumes a key name. An npz that came from another group names
+#  its arrays whatever that group named them, so each field is looked up under
+#  several plausible names AND checked for the right rank. A key that matches
+#  by name but not by shape is not the array wanted.
+#
+#  An absence is RECORDED, never invented. A run with no velocity is imported
+#  without one and says so, rather than being imported with zeros.
+# =============================================================================
 def _find(d, keys, ndim=None):
     low = {str(k).lower(): k for k in d}
     for k in keys:
@@ -100,6 +111,14 @@ def to_mask(a):
     return np.where(a > 0, PORE, SOLID).astype(np.uint8)
 
 
+# =============================================================================
+#  BLOCK 2.  WHAT WE ADD TO WHAT THEY SENT
+#
+#  The distance fields are computed here rather than trusted from the file, and
+#  by the same neighbour relaxation every other dataset in this project uses. A
+#  geodesic field computed a different way is a different input, and a model
+#  trained across both would see two distance scales.
+# =============================================================================
 def geodesic_2d(g):
     INF = np.float32(1e9)
     d = np.where(g == PORE, INF, np.nan).astype(np.float32)
@@ -134,6 +153,9 @@ def shape_conc(c, n_species):
     raise ValueError("concentration has %d dimensions, expected 2, 3 or 4" % c.ndim)
 
 
+# =============================================================================
+#  BLOCK 3.  ONE RUN
+# =============================================================================
 def read_run(path, n_species):
     z = np.load(path, allow_pickle=True)
     d = {k: z[k] for k in z.files}

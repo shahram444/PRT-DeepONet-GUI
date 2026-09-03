@@ -2,7 +2,7 @@
 """
 run_experiment.py — run the comparison that settles Christof's question.
 
-A thin wrapper over 3D/model/run_switch_sweep.py that knows where things live.
+A thin wrapper over 3D/model/run_ablation_sweep.py that knows where things live.
 
     python run_experiment.py --data ../3D/dataset/prt3d_dataset.h5
     python run_experiment.py --data 3d.h5 --quick        # plumbing check only
@@ -43,15 +43,32 @@ import os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SWEEP = os.path.join(ROOT, "3D", "model", "run_switch_sweep.py")
+# =============================================================================
+# BLOCK 1.  WHERE THE SWEEP LIVES
+#
+# The same trap as in build_transfer_set.py, and the same fault: this pointed at
+# run_switch_sweep.py long after that file had become run_ablation_sweep.py, so
+# the wrapper exited on its first check every time.
+# =============================================================================
+SWEEP = os.path.join(ROOT, "3D", "model", "run_ablation_sweep.py")
 DEFAULT_2D = os.path.join(HERE, "train2d.h5")
 
 
 def main():
+    # Checked before anything else, so a moved or renamed script is reported
+    # instead of surfacing later as a confusing subprocess failure.
     if not os.path.exists(SWEEP):
         sys.exit("cannot find %s\nIs this script still inside PRT-DeepONet/bridge/?"
                  % SWEEP)
+    # =========================================================================
+    # BLOCK 2.  FILL IN WHAT THE USER DID NOT TYPE, AND SAY SO
+    #
+    # Two defaults are supplied here, and each prints a line saying so. A
+    # wrapper that silently adds arguments is a wrapper whose output cannot be
+    # reproduced from the command that was typed.
+    # =========================================================================
     argv = sys.argv[1:]
+    # Only if the user did not name one. An explicit --data-2d always wins.
     if "--data-2d" not in argv and os.path.exists(DEFAULT_2D):
         argv += ["--data-2d", DEFAULT_2D]
         print("using the 2D transfer set at %s" % DEFAULT_2D)
@@ -59,11 +76,14 @@ def main():
         print("no 2D transfer set found at %s\n"
               "  the 2D rows will be skipped. Build one first with:\n"
               "      python build_transfer_set.py" % DEFAULT_2D)
+    # bridge/sweep, not the sweep script's own ./sweep, so a run started from
+    # here leaves its results here.
     if "--out" not in argv:
         argv += ["--out", os.path.join(HERE, "sweep")]
     cmd = [sys.executable, SWEEP] + argv
+    # Printed before it runs, so a wrapper is never a black box.
     print("$ " + " ".join(cmd), flush=True)
-    sys.exit(subprocess.run(cmd).returncode)
+    sys.exit(subprocess.run(cmd).returncode)   # the child's status is ours
 
 
 if __name__ == "__main__":

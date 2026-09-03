@@ -1,5 +1,5 @@
 ================================================================================
-PRT-DeepONet Studio - five worked projects, start to finish
+PRT-DeepONet Studio - six worked projects, start to finish
 ================================================================================
 Follow one from the top and you end with a trained surrogate and a prediction
 on a structure that was never simulated. Every box below has a value and a
@@ -472,7 +472,7 @@ if they do not the program says which and refuses.
 
 
 ================================================================================
-PROJECT 5 - 3D WITH THE THREE SWITCHES
+PROJECT 5 - 3D WITH SWITCHES A, B AND C
 ================================================================================
 Overnight. Do PROJECT 3 first; without its baseline none of this means
 anything. Each switch is off by default, and off reproduces the original code
@@ -508,6 +508,166 @@ breakdown is the point. Write down your prediction before you look: the flow
 field should win at high Peclet and lose below 1. If your dataset has no runs
 below Peclet 1, the comparison cannot test half of that, which is the argument
 for building one with the lowest Peclet at 0.3.
+
+
+================================================================================
+PROJECT 6 - SHOWING THE NETWORK THE FLOW
+================================================================================
+An afternoon for the cheap half, a night for the full one. Do PROJECT 3 or PROJECT 4
+first; this needs a dataset that already has a velocity field in it.
+
+THE PROBLEM IT SOLVES. Geometry and the geodesic distance cannot tell a preferential
+channel from the dead-end pocket beside it. Both are pore space, both sit the same
+path length from the inlet, and the model gives them similar concentrations. One of
+them gets almost no flow. That is where the largest errors have always been, and the
+velocity field is what separates them.
+
+WHAT IT DOES. The velocity joins the pore structure as extra image channels on the
+branch. The trunk is not touched. This is NOT switch A, which replaces the trunk's
+geodesic distance instead, and the two cannot be combined.
+
+WHERE IT LIVES. The flow field -> The flow pipeline. It has its own panel, not a box
+on the Train page, and the reason is worth a sentence. Switches A, B and C each change
+one training run and need nothing prepared. This one needs three earlier stages to have
+run against the same dataset first, and a tick box on the Train page would happily let
+you start the last stage without them. You would find out several minutes later, as a
+missing key inside an HDF5 file.
+
+The panel is one page with five steps on it. Fill in the boxes down the left ONCE. The
+dataset, the results folder, the buffer, the flow condition and the epoch count are
+shared by every step, which is what stops step 4 writing to one file while step 5 reads
+another. Each step shows the exact command it will run, has its own Run button, and can
+be unticked. "Run the whole pipeline" does them in order and stops at the first failure.
+
+  STEP 1  ADD THE FLOW DESCRIPTORS. Only if your dataset does not already carry them.
+          Datasets collected since this version was released do. Untick it otherwise.
+
+          GET THE BUFFER RIGHT. It is how many voxels of fully open channel sit at each
+          end of the flow axis: 10 for the published 2D set, 5 for geometries this
+          program generates, 0 for none. Wrong, and the pore size is measured against
+          an open channel instead of against the rock.
+
+  STEP 2  TRAIN ON THE SIMULATED FLOW. This is the cheap half and the whole reason the
+          panel is ordered this way. Your dataset already holds the velocity the solver
+          produced; use it, and you need no flow model at all.
+
+          It measures the CEILING. A predicted flow field can only ever approach the
+          real one, so if the real one does not help, a network trained to approximate
+          it will not help either. You learn that in an afternoon instead of a week.
+          Compare its held-out RMSE against your PROJECT 3 baseline before going on.
+
+  STEP 3  TRAIN THE VELOCITY OPERATOR. Pore structure and one flow number in, velocity
+          field out, no flow solve. Leave the divergence penalty at 10 and the pressure
+          prior on "solve"; both are on that step's own page under "All settings".
+
+  STEP 4  PREDICT THE FLOW AND STORE IT. Runs the operator over every run in the
+          dataset and writes samples/velocity_pred BESIDE the simulated field, never
+          over it. The panel ticks "write back" for you, because the pipeline is
+          pointless without it.
+
+          Read the divergence residual this step prints. Zero would be a field that
+          conserves mass exactly; the penalty pushes toward that without reaching it,
+          and the number says how far short it fell. Read it before you integrate
+          fluxes across an interface.
+
+  STEP 5  TRAIN ON THE PREDICTED FLOW. The same run as step 2 with one difference: the
+          velocity comes from the operator rather than from the solver. That one
+          difference is the entire question.
+
+THE PORE SIZE MAPS. The tick box on the left adds two more channels to both training
+steps: how wide the pore is at each voxel, and how wide the narrowest throat between
+that voxel and the inlet is. The second is the one a convolution cannot work out for
+itself, because the limiting throat can sit further away than anything its filters see
+at once. It needs step 1 to have run.
+
+READING THE RESULT. Three numbers, one question.
+
+  no flow          your PROJECT 3 baseline
+  simulated flow   step 2, the ceiling
+  predicted flow   step 5, what you actually get
+
+If "simulated" does not beat "no flow" on your data, stop there. The velocity
+information is not helping this dataset and no operator will change that. If it does,
+the gap between "simulated" and "predicted" is what the operator costs you.
+
+WHAT TO EXPECT. In two dimensions the published work measured the median concentration
+RMSE falling from 0.0304 to 0.0263 and the worst case from 0.1739 to 0.1126, which is
+the interesting part: the gain lands where the model was weakest. It grew with the
+Peclet number and vanished at Peclet 1 with a fast reaction, where diffusion and
+reaction govern and the flow barely matters. Nobody has measured any of this in three
+dimensions, which is the point of doing it.
+
+THE RESULT WORTH KNOWING BEFORE YOU START. They also tried feeding the same velocity to
+the TRUNK, as two numbers at each query point, and it recovered almost nothing. What
+matters is that the field arrives as a FIELD the convolution can read. A pointwise
+velocity says how fast the fluid moves here; it says nothing about what this point is
+connected to.
+
+
+================================================================================
+An afternoon for the cheap half, a night for the full one. Do PROJECT 3 or PROJECT 4
+first; this needs a dataset that already has a velocity field in it.
+
+THE PROBLEM IT SOLVES. Geometry and the geodesic distance cannot tell a preferential
+channel from the dead-end pocket beside it. Both are pore space, both sit the same
+path length from the inlet, and the model gives them similar concentrations. One of
+them gets almost no flow. That is where the largest errors have always been, and the
+velocity field is what separates them.
+
+IT DOES ONE THING: the velocity joins the pore structure as extra image channels
+on the branch. The trunk is not touched. It is NOT switch A, which replaces the trunk's
+geodesic distance instead, and the Train page refuses both at once rather than quietly
+picking one.
+
+THE CHEAP HALF FIRST. Your dataset already holds the velocity the solver produced. Use
+it, and you need no flow model at all.
+
+  Learn -> Train the network, set the velocity source to "simulated". Everything as in
+  PROJECT 3. Compare the held-out RMSE against your PROJECT 3 baseline.
+
+This is worth doing before anything else because it measures the CEILING. A predicted
+flow field can only ever approach the real one, so if the real one does not help, a
+network trained to approximate it will not help either, and you have learned that in an
+afternoon instead of a week.
+
+Optionally tick "also show it the pore size maps". That adds two more channels: how
+wide the pore is at each voxel, and how wide the narrowest throat between that voxel
+and the inlet is. The second is the one a convolution cannot work out for itself,
+because the throat can be further away than anything the filters can see at once. If
+the dataset does not carry them, Simulate -> Add the flow descriptors puts them in
+without collecting anything again. Get the buffer right: it is how many voxels of fully
+open channel sit at each end, 10 for the published 2D set, 5 for geometries this
+program generates, 0 for none. Wrong, and the pore size is measured against an open
+channel instead of against the rock.
+
+THE FULL PIPELINE. If the cheap half earned it, train the flow model.
+
+  STEP 1  The flow field -> Train a flow field predictor. Point it at the same dataset.
+          Leave the divergence penalty at 10 and the pressure prior on "solve".
+
+  STEP 2  The flow field -> Predict a flow field. Give it the checkpoint from step 1,
+          put the same dataset in "Or a whole dataset", and tick "store the fields in
+          that dataset". It writes them BESIDE the simulated ones, never over them.
+
+  STEP 3  Learn -> Train the network with the velocity source set to "predicted".
+
+Read the divergence residual step 2 prints. Zero would be a field that conserves mass
+exactly; the penalty pushes toward that without reaching it, and the number says how
+far short it fell. If you are going to integrate fluxes across an interface, read it
+before you do.
+
+WHAT TO EXPECT. In two dimensions the published work measured the middle of the error
+distribution improving by about a tenth and the WORST CASE by about a third, which is
+the interesting part: the gain lands where the model was weakest. It grew with the
+Peclet number and vanished at Peclet 1 with a fast reaction, where diffusion and
+reaction govern and the flow barely matters. Nobody has measured any of this in three
+dimensions, which is the point of doing it.
+
+THE RESULT WORTH KNOWING BEFORE YOU START. They also tried feeding the same velocity to
+the TRUNK, as two numbers at each query point, and it recovered almost nothing. What
+matters is that the field arrives as a FIELD the convolution can read. A pointwise
+velocity says how fast the fluid moves here; it says nothing about what this point is
+connected to.
 
 
 ================================================================================

@@ -82,6 +82,13 @@ class BranchCNN3D(nn.Module):
         return self.fc(x.reshape(x.size(0), -1))
 
 
+# =============================================================================
+#  BLOCK 2.  THE PARAMETER BRANCH
+#
+#  The dimensionless groups: Peclet, the Damkohler numbers, the half saturation
+#  constants and the yield. Three layers is enough because there are only a
+#  handful of numbers and no structure among them to discover.
+# =============================================================================
 class BranchFNN(nn.Module):
     """Parameter branch: the dimensionless groups."""
 
@@ -97,6 +104,9 @@ class BranchFNN(nn.Module):
         return self.net(x)
 
 
+# =============================================================================
+#  BLOCK 3.  THE TRUNK, AND WHY IT KEEPS BEING SHOWN THE GEOMETRY
+# =============================================================================
 class Trunk(nn.Module):
     """Trunk on (x, y, z, t_norm, geodesic_distance).
 
@@ -124,6 +134,9 @@ class Trunk(nn.Module):
         self.act = nn.SiLU()
 
     def forward(self, x):
+        # The LAST column by convention, not by name. dataset_reader.py builds
+        # the trunk in this order and both ends have to agree; that agreement
+        # lives in resolve_switches().
         geo = x[..., -1:]                      # the geodesic column
         h = self.act(self.first(x))
         for lin, film in zip(self.hidden, self.film):
@@ -135,6 +148,14 @@ class Trunk(nn.Module):
         return self.last(h)
 
 
+# =============================================================================
+#  BLOCK 4.  THE WHOLE NETWORK
+#
+#  branch1 (geometry) times branch2 (parameters), dotted with the trunk. A
+#  DeepONet's product-then-sum gives ONE number per query point, and there are
+#  several chemicals, so the head widens the fused code to one coefficient
+#  vector per species before the dot product.
+# =============================================================================
 class PRT_DeepONet3D(nn.Module):
     """branch1 (geometry) * branch2 (parameters), dotted with the shared trunk."""
 
@@ -150,12 +171,16 @@ class PRT_DeepONet3D(nn.Module):
                            inject_every)
         # one set of p coefficients per species, from the fused branch code
         self.head = nn.Linear(out_dim, n_species * out_dim)
+        # One learned bias per species. The dot product has no constant term,
+        # and a concentration field has a mean.
         self.bias = nn.Parameter(torch.zeros(n_species))
 
     def forward(self, b1, b2, trunk_pts):
         code = self.branch1(b1) * self.branch2(b2)          # (B, p)
         coef = self.head(code).view(-1, self.n_species, self.out_dim)
         basis = self.trunk(trunk_pts)                       # (B, P, p)
+        # einsum rather than a reshape and a matmul: the index letters say what
+        # is contracted, which is the part that is easy to get silently wrong.
         out = torch.einsum("bsp,bnp->bns", coef, basis)     # (B, P, S)
         return out + self.bias
 

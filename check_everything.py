@@ -1,4 +1,51 @@
 #!/usr/bin/env python3
+# =============================================================================
+# CHANGED FROM THE 2D VERSION
+#
+#   WHAT CHANGED HERE, IN ONE LINE
+#     Six new check groups, and one dead check removed.
+#
+#   THE SIX ADDED
+#     the flow descriptors    3D/tools/flow_features.py --self-test
+#                             15 checks, including the 2D forms against the
+#                             values their notebook produces.
+#     the pressure solve      3D/tools/harmonic_pressure.py --self-test
+#                             14 checks on the Laplace solve that feeds the
+#                             velocity operator's trunk.
+#     the velocity pipeline   3D/model/test_flow_pipeline.py
+#                             33 checks, end to end on a dataset it builds.
+#     the flow pipeline panel gui/test_flow_panel.py
+#                             35 checks on the window's flow panel: that its
+#                             five steps line up with each other, and that a
+#                             failed step stops the sequence instead of
+#                             running the next one against nothing.
+#     the comments            audit_comments.py --quiet
+#                             every file carrying its top block, its section
+#                             markers and its line comments.
+#     the test suite          tests/, discovered with unittest
+#                             smoke, unit, round trip, repeatability and the
+#                             refusals. Written to be run by somebody who does
+#                             not work on this project; tests/README.md is
+#                             addressed to them.
+#
+#   WHY MODEL HAD TO BE ADDED AS A PATH
+#     Every check before this lived in 3D/tools. test_flow_pipeline.py lives in
+#     3D/model, beside the models it exercises, so this file now resolves both
+#     directories rather than assuming one.
+#
+#   THE ONE REMOVED
+#     "pictures and VTI" pointed at write_vti_and_png.py, which was deleted
+#     from the project earlier. The check could only ever report MISSING, which
+#     is noise, not information.
+#
+#   ABOUT THE FAILURES YOU USED TO SEE
+#     Four groups failed here for a long time and were reported as inherited.
+#     Three of them were real faults and have been fixed: settings_and_units.py
+#     wrote an XML it could not read back, test_documented_numbers.py was
+#     hardcoded to one machine, and the window completeness check was itself
+#     wrong about six settings that ARE reachable. If something fails now,
+#     compare against PRT-DeepONet-v1.1 before assuming it is new.
+# =============================================================================
 """
 check_everything.py — run every self-check in the project and report once.
 
@@ -63,22 +110,63 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "3D", "tools")
 if not os.path.isdir(TOOLS):
     TOOLS = os.path.join(os.path.dirname(HERE), "GeometryAware3D", "tools")
-GUI = os.path.join(HERE, "gui")
+# Derived from TOOLS rather than from HERE, so it follows the fallback above
+# into a GeometryAware3D layout instead of pointing at a folder that is not there.
+MODEL = os.path.join(os.path.dirname(TOOLS), "model")
+GUI = os.path.join(HERE, "gui")     # the window's own tests live beside it
 
 CHECKS = [
+    # Order matters here: cheapest first. A broken installation fails in the
+    # first second on the simulators rather than eight minutes in, and the user
+    # gets the answer before they walk away.
     ("the 2D simulator", [sys.executable, os.path.join(TOOLS, "prtlb_2d.py")]),
     ("the 3D simulator", [sys.executable, os.path.join(TOOLS, "prtlb_3d.py")]),
     ("your own settings", [sys.executable, os.path.join(TOOLS, "settings_and_units.py"),
                            "--self-test"]),
-    ("pictures and VTI", [sys.executable, os.path.join(TOOLS,
-                                                      "write_vti_and_png.py")]),
     ("the flow solvers", [sys.executable, os.path.join(TOOLS, "test_flow_solvers.py")]),
+    # Still called "three": the flow pipeline is checked by the groups below.
     ("the three switches", [sys.executable, os.path.join(TOOLS, "test_three_switches.py")]),
     ("the documented numbers", [sys.executable, os.path.join(TOOLS, "test_documented_numbers.py")]),
     ("flow coordinates", [sys.executable, os.path.join(TOOLS, "flow_coordinates.py"),
                           "--self-test"]),
+    # ---- the flow groups, new in v1.2 --------------------------------------
+    # The first two are self-tests inside the modules they test, so they cost a
+    # second and run everywhere. The third builds a small dataset and trains for
+    # two epochs, so it is the slow one. The fourth is with the GUI checks
+    # below, because it tests the window rather than the model.
+    ("the flow descriptors", [sys.executable, os.path.join(TOOLS, "flow_features.py"),
+                              "--self-test"]),
+    ("the pressure solve", [sys.executable, os.path.join(TOOLS, "harmonic_pressure.py"),
+                            "--self-test"]),
+    ("the velocity pipeline", [sys.executable,
+                               os.path.join(MODEL, "test_flow_pipeline.py")]),
+    # No widget tests here: they need a display, or xvfb, and a check that
+    # cannot run on a plain server is a check nobody runs.
     ("what the buttons send", [sys.executable,
                                os.path.join(GUI, "test_gui_commands.py")]),
+    # New in v1.2. The buttons test asks whether each command parses. This one
+    # asks whether the five steps of the flow pipeline line up WITH EACH OTHER,
+    # which argparse cannot see: five perfectly valid commands can still have
+    # step 5 reading a file step 4 never wrote.
+    ("the flow pipeline panel", [sys.executable,
+                                 os.path.join(GUI, "test_flow_panel.py")]),
+    # Not a check on the code's behaviour but on whether it can be READ: every
+    # new or changed file carrying its top block, its section markers and its
+    # line comments. A documentation rule nobody checks decays on the first
+    # busy afternoon.
+    ("the comments", [sys.executable, os.path.join(HERE, "audit_comments.py"),
+                      "--quiet"]),
+    # The suite in tests/: smoke, unit, round trip, repeatability, refusals.
+    # Written to be run by somebody who does not work on this project, and
+    # tests/README.md is addressed to them.
+    #
+    # Discovered with unittest rather than through tests/run_all_tests.py,
+    # which would be the obvious call and is the wrong one: that runner ALSO
+    # runs several of the groups above, so this file would end up running them
+    # twice and reporting each of them under two names.
+    ("the test suite", [sys.executable, "-m", "unittest", "discover",
+                        "-s", os.path.join(HERE, "tests"),
+                        "-t", HERE, "-p", "test_*.py"]),
 ]
 
 

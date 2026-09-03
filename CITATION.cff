@@ -2,11 +2,13 @@ cff-version: 1.2.0
 title: PRT-DeepONet Studio
 message: >-
   If you use this software, please cite it as below. If you use the
-  two-dimensional half as well, please also cite Kim and Jung (2025),
-  listed under references.
+  two-dimensional half as well, please also cite Kim and Jung (2025);
+  if you use the velocity informed capability (switch D or the velocity
+  operator), please also cite Jo and Jung (2026). Both are listed under
+  references.
 type: software
-version: "1.1"
-date-released: "2026-08-31"
+version: "1.2"
+date-released: "2026-09-03"
 license: GPL-3.0-or-later
 authors:
   - given-names: Shahram
@@ -30,6 +32,7 @@ abstract: >-
 keywords:
   - pore-scale reactive transport
   - neural operator
+  - velocity field prediction
   - DeepONet
   - lattice Boltzmann
   - porous media
@@ -44,6 +47,28 @@ references:
       - given-names: Yehoon
         family-names: Kim
         email: wnsla7323@naver.com
+        affiliation: >-
+          Jung Lab, Chungnam National University, Republic of Korea
+      - given-names: Heewon
+        family-names: Jung
+        email: hjung@cnu.ac.kr
+        affiliation: >-
+          Jung Lab, Chungnam National University, Republic of Korea
+  - type: software
+    title: PRT-DeepONet, velocity-informed
+    year: 2026
+    license: GPL-3.0-or-later
+    repository-code: "https://github.com/hjunglab/PRT-DeepONet"
+    notes: >-
+      The velocity operator, the pressure component U-Net and the flow
+      descriptors in this project are ports of this release. Described in
+      Jo et al., PRT-DeepONet with Sequentially Coupled Velocity and
+      Concentration Prediction for Pore-Scale Reactive Transport, preprint
+      SSRN 7388394.
+    authors:
+      - given-names: Hyegyeong
+        family-names: Jo
+        email: hyegyeong6321@naver.com
         affiliation: >-
           Jung Lab, Chungnam National University, Republic of Korea
       - given-names: Heewon

@@ -49,9 +49,19 @@ PACKAGES = [
 ]
 TORCH = ("torch", "torch", "the network itself: training and prediction")
 
+# The CPU wheel index. The default PyPI torch pulls the CUDA build, which is
+# about two gigabytes of driver code a laptop will never run.
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 
+# =============================================================================
+#  BLOCK 2.  IS IT THERE?
+#
+#  By IMPORT NAME, not by package name: pip installs scikit-image and Python
+#  imports skimage. Asking pip what it thinks is installed answers about a
+#  different interpreter as often as not, which is the whole failure this
+#  script exists to sort out.
+# =============================================================================
 def have(mod):
     try:
         __import__(mod)
@@ -68,7 +78,9 @@ def report(title):
     print("   %s" % sys.executable)
     print("   version %s" % sys.version.split()[0])
     print()
-    allok = True
+    allok = True    # every package, not the first missing one
+    # torch last, because it is the big one and the one most likely to be
+    # missing, so it is the line the eye lands on.
     for mod, pkg, why in PACKAGES + [TORCH]:
         ok = have(mod)
         allok &= ok
@@ -77,9 +89,16 @@ def report(title):
     return allok
 
 
+# =============================================================================
+#  BLOCK 3.  INSTALLING
+#
+#  Always "sys.executable -m pip", never a bare "pip". A pip on PATH belongs to
+#  whichever Python was installed last, and packages put there are invisible to
+#  the interpreter the window actually runs its scripts with.
+# =============================================================================
 def pip(args):
     cmd = [sys.executable, "-m", "pip"] + args
-    print("$ " + " ".join(cmd), flush=True)
+    print("$ " + " ".join(cmd), flush=True)      # nothing installed unseen
     r = subprocess.run(cmd)
     return r.returncode
 

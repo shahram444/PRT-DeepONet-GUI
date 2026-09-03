@@ -2399,7 +2399,7 @@ TEMPLATE_XML = """<?xml version="1.0" ?>
 
        For each quantity you have TWO ways to say what you want, and you pick
        one. Give a RANGE and the generator draws from it at random, spaced
-       logarithmically -- log-uniform rather than uniform because these
+       logarithmically. Log-uniform rather than uniform, because these
        quantities span decades and a uniform draw would put nine tenths of the
        runs in the top decade. Give a LIST and it uses exactly those numbers
        and nothing else, which is what you want when you are reproducing

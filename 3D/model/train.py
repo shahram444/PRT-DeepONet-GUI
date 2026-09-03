@@ -1,4 +1,39 @@
 #!/usr/bin/env python3
+# =============================================================================
+# CHANGED FROM THE 2D VERSION
+#
+#   WHAT CHANGED HERE, IN ONE LINE
+#     Two new flags, --velocity-informed and --geom-features, plus a guard that
+#     refuses to run switch A and the flow pipeline at the same time.
+#
+#   WHERE IT CAME FROM
+#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
+#     Their concentration model takes the velocity on the BRANCH and leaves the
+#     trunk alone. Their own control is what makes this worth copying: the same
+#     velocity fed to the trunk pointwise recovered almost none of the gain
+#     (0.0297 against a 0.0304 baseline), so it is not the information that
+#     helps, it is the information arriving as a FIELD a convolution can read.
+#
+#   THE TWO ROUTES, AND WHICH TO RUN FIRST
+#     --velocity-informed simulated uses the flow your solver already stored.
+#     It needs no velocity operator at all and costs one training run. That is
+#     the ceiling a predicted field is chasing, so run it FIRST. If the true
+#     flow field does not help, a network trained to approximate it will not
+#     help either, and you will have saved yourself the second stage.
+#     --velocity-informed predicted is the full two stage pipeline and needs
+#     train_velocity.py and predict_velocity.py --write-back to have run.
+#
+#   WHY A AND D CANNOT BE COMBINED
+#     Switch A REPLACES the trunk's geodesic distance with a flow coordinate
+#     and puts the velocity in the branch. This leaves the trunk exactly as
+#     it was and adds the velocity to the branch. Asking for both is asking for
+#     two different branch layouts at once, and whichever won would be a coin
+#     toss the log did not record. So this file raises instead of choosing.
+#
+#   WHAT DID NOT CHANGE
+#     Every flag that existed before behaves as it did. With the two new flags
+#     left at their defaults this is the v1.1 training script.
+# =============================================================================
 """
 train.py — train the 3D PRT-DeepONet on dataset_reader.h5.
 
@@ -48,10 +83,16 @@ def main():
     ap.add_argument("--with-velocity", action="store_true")
 
     # ---------------------------------------------------------------- switches
-    # All three default OFF.  With all three off this script behaves exactly as
-    # it did before they existed; tools/test_three_switches.py proves it bit-exactly.
+    # A, B and C are the feature switches. --velocity-informed is not one of
+    # them: it is the flow pipeline, which needs three earlier stages to have
+    # run against the same dataset, and the window gives it a page of its own
+    # rather than a box beside these. It lives in this group because it is a
+    # flag on this script like the rest, not because it works like them.
+    #
+    # All default OFF. With all of them off this script behaves exactly as it
+    # did before they existed; tools/test_three_switches.py proves it bit-exactly.
     sw = ap.add_argument_group(
-        "feature switches (all default OFF -> original behaviour)")
+        "feature switches and the flow pipeline (all default OFF)")
     sw.add_argument("--flow-proxy", action="store_true",
                     help="SWITCH A. Use the FLOW FIELD instead of the geometry. "
                          "The trunk's geodesic column becomes the advective "
@@ -91,6 +132,21 @@ def main():
                          "reaction response; the branch carries the topology, "
                          "which is what actually differs between 2D and 3D.")
 
+    sw.add_argument("--velocity-informed", choices=["off", "simulated", "predicted"],
+                    default="off",
+                    help="THE FLOW PIPELINE. Give the CONCENTRATION branch the velocity "
+                         "field as "
+                         "extra image channels, z scored, leaving the trunk exactly as "
+                         "it was. 'simulated' uses samples/velocity, what the solver "
+                         "produced, which needs no velocity operator and measures the "
+                         "ceiling a predicted field is chasing. 'predicted' uses "
+                         "samples/velocity_pred, which predict_velocity.py --write-back "
+                         "puts there, and is the published two stage pipeline.")
+    sw.add_argument("--geom-features", action="store_true",
+                    help="with --velocity-informed, also give the branch the MIS and "
+                         "UPRM maps. "
+                         "Needs geom/mis and geom/uprm; add_flow_features.py writes "
+                         "them into an existing dataset without recollecting it.")
     sw.add_argument("--dim-free", action="store_true",
                     help="SWITCH C. A and B together. Replaces the Cartesian "
                          "trunk (x,y,z,t,gdf) with the flow-space trunk "
@@ -121,12 +177,28 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Switch A REPLACES the trunk's geometry feature with a flow coordinate and puts
+    # the velocity in the branch. --velocity-informed leaves the trunk alone and puts it
+    # in the branch. Asking for both is asking for two different branch layouts at
+    # once, and whichever won would be a coin toss the log did not record.
+    if args.velocity_informed != "off" and (args.flow_proxy or args.dim_free):
+        raise SystemExit(
+            "--velocity-informed cannot be combined with --flow-proxy or --dim-free.\n"
+            "Switch A replaces the trunk's geodesic distance with a flow coordinate;\n"
+            "--velocity-informed keeps the trunk unchanged and adds to the branch.\n"
+            "They are two different answers to the same question, so run them "
+            "separately and compare.")
+    if args.geom_features and args.velocity_informed == "off":
+        raise SystemExit("--geom-features only does anything with --velocity-informed")
+
     tr_idx, te_idx = split_by_geometry(args.data, frac=args.test_frac, seed=args.seed)
     common = dict(n_points=args.n_points, with_velocity=args.with_velocity,
                   distance=args.distance, with_time=args.with_time,
                   flow_proxy=args.flow_proxy, dim_free=args.dim_free,
                   flow_mode=args.flow_mode, u_floor=args.u_floor,
-                  keep_geometry_channel=args.keep_geometry_channel)
+                  keep_geometry_channel=args.keep_geometry_channel,
+                  velocity_informed=args.velocity_informed,
+                  geom_features=args.geom_features)
     train_ds = PRT3DDataset(args.data, indices=tr_idx, **common)
     test_ds = PRT3DDataset(args.data, indices=te_idx, **common)
 

@@ -1,5 +1,55 @@
 #!/usr/bin/env python3
 # =============================================================================
+# CHANGED FROM THE 2D VERSION
+#
+#   WHAT CHANGED HERE, IN ONE LINE
+#     The window learned the flow capability: a whole panel for it, five new
+#     Actions, and a new sidebar group in both modes.
+#
+#   THE NEW PANEL:  class FlowPipelinePage
+#     The flow capability is a SEQUENCE, not a setting, so it gets a panel
+#     box. Five steps in order, each with its own state, its own command line
+#     and its own Run button, plus one button that runs them all and stops at
+#     the first failure. The long comment above that class says why, and what
+#     the earlier attempt got wrong.
+#
+#   THE FIVE NEW ACTIONS  (search this file for their ids)
+#     flow_features      runs 3D/tools/add_flow_features.py. Writes geom/mis,
+#                        geom/uprm and geom/dw2 into a dataset that was
+#                        collected before the collectors started writing them.
+#     train_flow_sim     runs 3D/model/train.py with --velocity-informed
+#                        simulated. The cheap control: the flow the solver
+#                        already stored, no velocity model needed.
+#     train_velocity     runs 3D/model/train_velocity.py. Trains the velocity
+#                        operator: pore structure and one flow number in, the
+#                        velocity field out, with no flow solve.
+#     predict_velocity   runs 3D/model/predict_velocity.py. Writes
+#                        samples/velocity_pred BESIDE samples/velocity and
+#                        never over it, so the simulated field survives.
+#     train_flow_pred    runs train.py with --velocity-informed predicted.
+#
+#   THE NEW SIDEBAR GROUP
+#     "The flow field", in BOTH the 2D and the 3D tree. The panel is the first
+#     entry and the five scripts sit under it, indented: the pipeline is what
+#     to open, and the separate pages are for redoing one step you already
+#     know you want.
+#
+#   WHAT WAS TAKEN OFF THE TRAINING PAGE
+#     It used to be a choice box there, called SWITCH D, under switches A, B
+#     and C. It is
+#     removed. A, B and C each change one training run and need nothing
+#     prepared; D needs three earlier stages against the same dataset, and a
+#     box on that page could start the last stage without them. The flag on
+#     train.py is unchanged and always was; only the way in has moved.
+#
+#   WHAT DID NOT CHANGE
+#     Every page, field and command that existed before is untouched. The rule
+#     this window has always followed still holds: every page shows the exact
+#     command line it will run, and no command is ever hidden. The new pages
+#     are no exception, so anything you can do here you can also do in a
+#     terminal, and see how.
+# =============================================================================
+# =============================================================================
 # prt_gui.py — PRT-DeepONet Studio
 #
 # One window for the whole project: 2D and 3D, geometry generation, simulation
@@ -133,6 +183,11 @@ class Field:
     """One input on an action page.
 
     kind:  'file' 'files' 'savefile' 'dir' 'int' 'float' 'text' 'choice' 'bool'
+           'fixed' -- a value that is part of what this action IS, shown but
+           not editable. 'Train on the simulated flow' sends
+           --velocity-informed simulated because that is what it is; a box
+           offering to change it to 'predicted' would silently turn the page
+           into the other action while keeping its title and its output folder.
     label: what a transport scientist would call it
     help:  one sentence, plain language, saying what it is FOR
     """
@@ -485,16 +540,19 @@ THE THREE-DIMENSIONAL WORK, THE SIMULATION GENERATORS AND THIS APPLICATION
     Covering the three-dimensional formulation, the geometry generator, the
     D2Q9 and D3Q19 lattice-Boltzmann flow solvers, the shared
     advection-diffusion-reaction solver, the CompLaB3D campaign and collection
-    tools, the training, evaluation and prediction pipeline, the three
-    switches, and this application.
+    tools, the training, evaluation and prediction pipeline, the four
+    switches, the three-dimensional velocity operator, and this application.
 
 
 THE TWO-DIMENSIONAL WORK
 
-    PRT-DeepONet, on which the two-dimensional side of this project builds:
+    PRT-DeepONet, on which the two-dimensional side of this project builds,
+    and the velocity-informed release the flow capability is ported from:
 
         Yehoon Kim          Chungnam National University
                             wnsla7323 <at> naver.com
+        Hyegyeong Jo        Chungnam National University
+                            hyegyeong6321 <at> naver.com
         Heewon Jung         Chungnam National University
                             hjung <at> cnu.ac.kr
 
@@ -548,16 +606,25 @@ LICENCE
 
 HOW TO CITE
 
+    Cite the three-dimensional extension, the dataset format and this
+    application as:
+
+        Asgari, S. and Meile, C. PRT-DeepONet Studio, version 1.2.
+        Meile Lab, Department of Marine Sciences,
+        University of Georgia, 2026.
+
     Cite the two-dimensional work as PRT-DeepONet, Kim and Jung, Chungnam
-    National University, 2025. Cite the three-dimensional extension as this
-    project, Asgari and Meile, Meile Lab, University of Georgia, 2026. If you
-    use both, cite both: the geometry-aware three-dimensional method extends
-    their architecture, it does not replace it.
+    National University, 2025, if you touch anything on the two-dimensional
+    side. Cite the velocity-informed release, Jo and Jung, same laboratory,
+    if you use the flow pipeline or the velocity operator.
+
+    If you use several, cite several: the geometry-aware three-dimensional
+    method extends their architecture, it does not replace it.
 
 
 VERIFYING THIS INSTALLATION
 
-    Set up -> Check everything at once runs ten independent groups of checks,
+    Set up -> Check everything at once runs thirteen independent groups of checks,
     including both simulators against analytic answers: plug flow must leave
     exp(-Da) at the outlet, and a front must spread as wide as the exact erfc
     solution says.
@@ -577,6 +644,17 @@ VERIFYING THIS INSTALLATION
 # The page itself explains what a button does at length. This is the four-word
 # version, shown in the tree, so the list can be read top to bottom without
 # opening anything.
+# The flow group, as DATA rather than as five inserts inside a method. Written
+# in the same ("Group name", [keys]) shape as the group tables in build_tree(),
+# and that shape is load-bearing: test_gui_widgets.py scrapes this file for it
+# to prove every action is reachable from the sidebar. Written any other way,
+# these five actions exist, pass the command test, and appear on no button --
+# which is exactly what that check was added after.
+FLOW_SIDEBAR = ("The flow field", ["flow_features", "train_velocity",
+                                   "predict_velocity", "train_flow_sim",
+                                   "train_flow_pred"])
+
+
 TREE_HINTS = {
     "install":     "gets the software the scripts need",
     "capabilities": "what this can and cannot do vs CompLaB",
@@ -594,6 +672,11 @@ TREE_HINTS = {
     "evaluate":    "scores it on structures it never saw",
     "sweep":       "trains every switch and compares them",
     "predict":     "answers about a structure never simulated",
+    "flow_features": "pore size maps a flow-aware model needs",
+    "train_velocity": "learns the flow field from the structure",
+    "predict_velocity": "a flow field with no flow solve",
+    "train_flow_sim": "the control: train on the SOLVER's flow field",
+    "train_flow_pred": "train on the flow the network predicted",
 }
 
 
@@ -1776,6 +1859,19 @@ def build_actions():
                "wall distance and time. That is three numbers in BOTH 2D and 3D, "
                "so the same network fits both. Turns on switch A automatically.",
                flag="--dim-free"),
+         # ---- THE FLOW CAPABILITY IS NOT HERE, AND THAT IS DELIBERATE -------
+         # It used to be a choice box on this page, sitting under switches A, B
+         # and C as though it were the fourth of the same kind of thing. It is
+         # not. A, B and C each change ONE training run. D is a four stage
+         # pipeline: put the descriptors in the dataset, train the velocity
+         # operator, predict a field and write it back, then train on it. A box
+         # on this page could start the last stage without the first three, and
+         # the failure would arrive minutes later as a missing HDF5 key.
+         #
+         # So the whole of it lives on its own panel: "The flow pipeline"
+         # in the sidebar. The flag --velocity-informed still exists on
+         # train.py and always did; it is simply reached from the page that
+         # also arranges for it to have something to read.
          Field("init_from", "Start from an existing model", "file", "",
                "Warm-start from a checkpoint, for example one trained on 2D data.",
                flag="--init-from", optional=True,
@@ -1904,6 +2000,233 @@ def build_actions():
         [("pred_*.png", "slices and 3D renders of every predicted chemical"),
          ("*.vti", "volumes you can open in ParaView"),
          ("prediction.npz", "the raw arrays")],
+        group="Learn")
+
+    # =========================================================================
+    # BLOCK 7b.  THE FLOW CAPABILITY.  New in v1.2; none of this existed before.
+    #
+    # Three actions, in the order you would actually run them:
+    #
+    #   flow_features     only if your dataset was collected before the
+    #                     collectors started writing MIS and UPRM themselves.
+    #                     Adds them in place, no recollection.
+    #   train_velocity    trains the operator: pore structure and one flow
+    #                     number in, velocity field out, no flow solve.
+    #   predict_velocity  runs it, and with 'store the fields in that dataset'
+    #                     writes samples/velocity_pred BESIDE the simulated
+    #                     field. That is what 'predicted' below then reads.
+    #
+    # Every Action below is a plain description of one script's command line.
+    # Nothing here runs anything itself; the window builds the command, shows
+    # it, and hands it to a subprocess, exactly as every other page does.
+    # =========================================================================
+    A["flow_features"] = Action(
+        "flow_features", "Add the flow descriptors to a dataset",
+        "Works out the pore size maps a flow-aware model needs, without recollecting.",
+        os.path.join(TOOLS, "add_flow_features.py"),
+        [Field("data", "Dataset", "file", "",
+               "The .h5 to add them to. It is changed IN PLACE, and nothing already "
+               "in it is touched.", flag="--data",
+               filetypes=[("HDF5 dataset", "*.h5")]),
+         Field("buffer", "Open buffer at each end, in voxels", "int", 10,
+               "How many voxels of fully open channel sit at the inlet and the "
+               "outlet. This MUST match your campaign: 10 for the published 2D set, "
+               "5 for the geometries this program generates, 0 for a domain with no "
+               "padding. Get it wrong and the pore size map is measured against an "
+               "open channel instead of the rock.", flag="--buffer"),
+         Field("force", "Recompute if already there", "bool", False,
+               "Only right if the buffer was wrong the first time.", flag="--force"),
+         Field("dry_run", "Just say what it would do", "bool", False, "",
+               flag="--dry-run")],
+        [("a dataset .h5", "any one built by this program")],
+        ["Reads the pore structure of every rock in the file.",
+         "Works out MIS, the radius of the largest sphere that fits in the pore "
+         "space and contains each voxel. That is how wide the pore is here.",
+         "Works out UPRM, the radius of the largest sphere the inlet could deliver "
+         "to each voxel, which is set by the narrowest throat on the way. Two "
+         "identical pockets get different values if one sits behind a bottleneck, "
+         "and that is the part the network cannot work out for itself.",
+         "Works out the squared wall distance, scaled once across the whole file."],
+        [("geom/mis, geom/uprm, geom/dw2", "three new arrays inside the file you named"),
+         ("nothing else", "no new file is created")],
+        group="Simulate")
+
+    # Two actions, one per source of velocity, rather than one action with a
+    # source box. They are DIFFERENT EXPERIMENTS, run at different points in
+    # the pipeline, and they are compared against each other at the end. One
+    # box with two settings would have let a single output folder hold first
+    # one and then the other, and nothing on disk would say which.
+    def _flow_train_fields(tag, source, out_default):
+        return [
+            Field("data", "Dataset", "file", "",
+                  "The same .h5 the rest of the pipeline uses.", flag="--data",
+                  filetypes=[("HDF5 dataset", "*.h5")]),
+            Field("out", "Folder for the result", "dir", out_default,
+                  "The trained weights and the training history go here.",
+                  flag="--out"),
+            Field("source", "", "fixed", source, "", flag="--velocity-informed"),
+            Field("geom_features", "Also show it the pore size maps", "bool", False,
+                  "Adds MIS, how wide the pore is here, and UPRM, how wide the "
+                  "narrowest throat between here and the inlet is. The dataset "
+                  "must already carry them; step 1 of the pipeline puts them "
+                  "into one that does not.", flag="--geom-features"),
+            Field("epochs", "How many passes over the data", "int", 300,
+                  "Training stops early if the held-out error stops improving.",
+                  flag="--epochs"),
+            Field("batch_size", "Samples per step", "int", 8, "",
+                  flag="--batch-size"),
+            Field("n_points", "Voxels sampled per step", "int", 8192, "",
+                  flag="--n-points"),
+            Field("lr", "Learning rate", "float", 1e-3, "", flag="--lr"),
+            Field("patience", "Stop after this many bad epochs", "int", 30, "",
+                  flag="--patience"),
+            Field("test_frac", "Fraction held out", "float", 0.2,
+                  "Held out by STRUCTURE, never by run, so the score is on rocks "
+                  "the network has never seen.", flag="--test-frac"),
+        ]
+
+    A["train_flow_sim"] = Action(
+        "train_flow_sim", "Train on the simulated flow  (the control)",
+        "The cheap half: train on the flow your solver already stored.",
+        os.path.join(MODEL, "train.py"),
+        _flow_train_fields("sim", "simulated",
+                           os.path.join(NEW3D, "model_flow_simulated")),
+        [("dataset.h5 with samples/velocity",
+          "any campaign collected WITHOUT 'skip the flow field'"),
+         ("nothing else", "no velocity model is needed for this run")],
+        ["Hands the concentration branch the velocity the SOLVER produced, as "
+         "extra image channels, z scored so it is not swamped by the 0/1 mask.",
+         "Leaves the trunk exactly as it was. That is what separates this from "
+         "switch A, "
+         "and not switch A.",
+         "Trains and scores on held-out STRUCTURES, as every other training run "
+         "here does."],
+        [("best.pt", "the trained model"),
+         ("history.csv", "the loss per epoch, to compare against the run with "
+                         "the flag left off")],
+        group="Flow",
+        metric_re=re.compile(r"epoch\s+(\d+).*?train\s+([0-9.eE+-]+).*?test\s+([0-9.eE+-]+)"),
+        note="Run this BEFORE building a velocity model. It measures the ceiling "
+             "a predicted field is chasing, and it costs one training run.")
+
+    A["train_flow_pred"] = Action(
+        "train_flow_pred", "Train on the predicted flow",
+        "The full two stage pipeline: train on a flow field the network produced.",
+        os.path.join(MODEL, "train.py"),
+        _flow_train_fields("pred", "predicted",
+                           os.path.join(NEW3D, "model_flow_predicted")),
+        [("dataset.h5 with samples/velocity_pred",
+          "written by 'Predict a flow field' with 'store the fields' ticked")],
+        ["Identical to the control run above in every respect except one: the "
+         "velocity channels come from the OPERATOR, not from the solver.",
+         "That one difference is the whole question. The gap between this run "
+         "and the control is what the velocity model costs you."],
+        [("best.pt", "the trained model"),
+         ("history.csv", "the loss per epoch, to compare against both the "
+                         "control and the run with no flow at all")],
+        group="Flow",
+        metric_re=re.compile(r"epoch\s+(\d+).*?train\s+([0-9.eE+-]+).*?test\s+([0-9.eE+-]+)"),
+        note="Needs steps 1 to 4 of the pipeline to have run on this dataset.")
+
+    A["train_velocity"] = Action(
+        "train_velocity", "Train a flow field predictor",
+        "Learns to produce the velocity field from the pore structure alone.",
+        os.path.join(MODEL, "train_velocity.py"),
+        [Field("data", "Dataset", "file", "",
+               "Must hold a velocity field. That means it was collected WITHOUT "
+               "'skip the flow field'.", flag="--data",
+               filetypes=[("HDF5 dataset", "*.h5")]),
+         Field("out", "Folder for the result", "dir", os.path.join(NEW3D, "velocity"),
+               "", flag="--out"),
+         Field("condition", "Which condition drives the flow", "text", "pe",
+               "The column of the parameter table the flow branch reads. Our "
+               "datasets record the Peclet number; the published model uses the "
+               "Reynolds number, which we do not store. The network does not mind "
+               "which, so long as it is the same one at prediction time, and the "
+               "checkpoint records the choice.", flag="--condition"),
+         Field("lam", "Divergence penalty weight", "float", 10.0,
+               "Pushes the predicted flow toward conserving mass. Their own sweep "
+               "found accuracy flat up to 10 and clearly worse past 100, so 10 is "
+               "the balance. Raise it only if you are going to integrate fluxes "
+               "across an interface.", flag="--lambda"),
+         Field("pressure", "Where the pressure prior comes from", "choice", "solve",
+               "solve  works out the harmonic pressure field exactly. On a 2D grid "
+               "this is faster than a network.\n"
+               "unet   uses a trained U-Net instead, which is what the published "
+               "pipeline does.\n"
+               "none   turns the prior off, which is the ablation that says what it "
+               "was worth.", flag="--pressure",
+               choices=["solve", "unet", "none"]),
+         Field("unet", "The pressure U-Net", "file", "",
+               "Only for 'unet' above.", flag="--unet", optional=True,
+               filetypes=[("Checkpoint", "*.pt")]),
+         Field("buffer", "Open buffer at each end, in voxels", "int", 10,
+               "Same meaning as on 'Add the flow descriptors'.", flag="--buffer"),
+         Field("epochs", "How many passes over the data", "int", 300, "",
+               flag="--epochs"),
+         Field("batch_size", "Samples per step", "int", 25, "", flag="--batch-size"),
+         Field("lr", "Learning rate", "float", 1e-3, "", flag="--lr"),
+         Field("patience", "Stop after this many bad epochs", "int", 15, "",
+               flag="--patience"),
+         Field("test_frac", "Fraction held out", "float", 0.15,
+               "Held out by STRUCTURE, never by run.", flag="--test-frac"),
+         Field("quick", "Quick plumbing check only", "bool", False,
+               "Three epochs on a handful of runs. Proves it runs and nothing else.",
+               flag="--quick"),
+         Field("seed", "Random seed", "int", 42, "", flag="--seed")],
+        [("a dataset .h5 with a velocity field", "the flow the solver produced"),
+         ("nothing else", "the pore size maps are worked out here if the file lacks them")],
+        ["Reads the pore structure and the flow field of every run.",
+         "Works out the pore size maps and the pressure prior, once per rock.",
+         "Fits a network that maps the structure and one flow number to the two or "
+         "three velocity components, everywhere in the pore space.",
+         "Adds a penalty on how far the predicted flow is from conserving mass.",
+         "Reports the error on held-out structures as percentiles, not one average, "
+         "because the interesting question is what happens to the hard cases."],
+        [("best.pt", "the trained flow predictor, carrying its own scaling"),
+         ("history.csv", "the loss per epoch"),
+         ("run.json", "everything about the run except the weights")],
+        group="Learn")
+
+    A["predict_velocity"] = Action(
+        "predict_velocity", "Predict a flow field",
+        "Produces a velocity field for a structure, with no flow solve at all.",
+        os.path.join(MODEL, "predict_velocity.py"),
+        [Field("checkpoint", "Trained flow predictor", "file", "",
+               "The best.pt from 'Train a flow field predictor'.",
+               flag="--checkpoint", filetypes=[("Checkpoint", "*.pt")]),
+         Field("geometry", "One geometry", "file", "",
+               "Leave blank to do a whole dataset instead.", flag="--geometry",
+               optional=True,
+               filetypes=[("Geometry", "*.npz *.npy"), ("All files", "*.*")]),
+         Field("pe", "The flow condition", "float", 10.0,
+               "In the units the checkpoint was trained on. Only for a single "
+               "geometry.", flag="--pe", optional=True),
+         Field("data", "Or a whole dataset", "file", "",
+               "Predicts a field for every run in the file.", flag="--data",
+               optional=True, filetypes=[("HDF5 dataset", "*.h5")]),
+         Field("write_back", "   store the fields in that dataset", "bool", False,
+               "Writes samples/velocity_pred BESIDE the simulated field, never over "
+               "it. That is what 'predicted' on the training page then reads.",
+               flag="--write-back"),
+         Field("unet", "The pressure U-Net", "file", "",
+               "Only if the checkpoint was trained with one.", flag="--unet",
+               optional=True, filetypes=[("Checkpoint", "*.pt")]),
+         Field("out", "Folder for the output", "dir",
+               os.path.join(NEW3D, "velocity_prediction"), "", flag="--out"),
+         Field("vti", "Also write .vti files", "bool", False,
+               "Opens in ParaView beside CompLaB's own output.", flag="--vti")],
+        [("best.pt from the flow trainer", "carrying the scaling it was trained with"),
+         ("a geometry, or a dataset", "whichever you want a field for")],
+        ["Rebuilds the same inputs training used, at the same scaling, from the "
+         "checkpoint rather than from anything you type.",
+         "Runs the network once per structure.",
+         "Reports how far the field is from conserving mass, so the number is "
+         "visible rather than assumed.",
+         "With a dataset, stores the fields beside the simulated ones."],
+        [("velocity.npz and velocity.png", "for a single geometry"),
+         ("samples/velocity_pred", "inside the dataset, with --write-back"),
+         ("*_pred.vti", "one per component, for ParaView")],
         group="Learn")
 
     # ---------------------------------------------------------- 8. SWEEP
@@ -2431,6 +2754,25 @@ class ActionPage(tk.Frame):
             self.computed.append(lab)
             self._update_computed()
             return row
+        if f.kind == "fixed":
+            # Shown, never editable. It is part of what this action IS, so a
+            # box offering to change it would be offering to turn the page
+            # into a different action while keeping its title and its output
+            # folder. The value is displayed rather than hidden because this
+            # window's rule is that nothing about a command is concealed.
+            bar = tk.Frame(row, bg=HEAD)
+            bar.pack(fill="x", pady=(6, 0))
+            tk.Label(bar, text="fixed for this page", bg=HEAD, fg=MUTE,
+                     font=base_font(8), anchor="w", padx=6,
+                     pady=2).pack(fill="x")
+            tk.Label(bar, text="%s %s" % (f.flag, f.value()), bg=HEAD, fg=INK,
+                     font=mono_font(9), anchor="w", padx=6,
+                     pady=(0)).pack(fill="x")
+            if f.help:
+                tk.Message(row, text=f.help, bg=PANEL, fg=MUTE,
+                           font=base_font(8), width=350, anchor="w",
+                           justify="left").pack(fill="x")
+            return row
         if f.kind == "chemicals":
             self._chem_widget(row, f)
             return row
@@ -2768,6 +3110,11 @@ class ActionPage(tk.Frame):
 
     def reset(self):
         for f in self.action.fields:
+            # A fixed value is not a setting, so 'Reset settings' leaves
+            # it alone. Resetting it to its default would be a no-op
+            # today and a silent trap the day someone edits the default.
+            if f.kind == "fixed":
+                continue
             f.var.set(f.default if f.kind != "bool" else bool(f.default))
         self._sync_depends()
         self.refresh_cmd()
@@ -2835,7 +3182,7 @@ class ActionPage(tk.Frame):
             # so the emptiness test below would flag every one of them --
             # which is exactly what it did, and the dialog then listed five
             # headings and one blank line and told the user to attend to them.
-            if f.kind in ("heading", "computed"):
+            if f.kind in ("heading", "computed", "fixed"):
                 continue
             # A wrong token count, a chemical with no name, two chemicals with
             # the same name: caught here, before the script is launched, and
@@ -3396,6 +3743,467 @@ def render_iso(vol, pore, level, vmin, vmax, cmap, elev=22.0, azim=-58.0,
         img = img[:m, :m].reshape(m // ss, ss, m // ss, ss, 3).mean((1, 3))
     return np.clip(img, 0.0, 1.0), int(sel.sum())
 
+
+# =============================================================================
+#  THE FLOW PIPELINE PANEL
+# =============================================================================
+# WHAT CHANGED FROM THE 2D VERSION, AND WHY THIS PANEL EXISTS
+#
+#   In the released 2D work the velocity-informed model is a SEQUENCE, not a
+#   setting: train an operator that predicts the flow, run it, then train the
+#   concentration model on what it produced. Nothing about that fits in a
+#   tick box.
+#
+#   This panel was written after the first attempt put it in one. It
+#   started life as a choice box on the training page, sitting under switches
+#   A, B and C as though it were the fourth of the same kind of thing. It is
+#   not. A, B and C each change ONE training run and need nothing prepared.
+#   D needs three earlier stages to have run against the same dataset, and
+#   picking "predicted" without them fails minutes later, inside h5py, with a
+#   missing key.
+#
+#   So the sequence gets a panel that shows it AS a sequence: five steps, in
+#   order, each with its own state, its own command line and its own Run
+#   button, plus one button that runs them all and stops at the first failure.
+#
+# WHAT IT DOES NOT DO
+#   It does not run anything itself and it does not build any command of its
+#   own. Every step is one of the ordinary Action objects from the catalogue
+#   above, its settings filled in from the shared boxes at the top of the
+#   panel, and the command shown is the one that Action produces. That is the
+#   whole reason the panel can be trusted: test_gui_commands.py checks those
+#   Actions against the real argument parsers, so it is checking these steps
+#   too, without knowing this panel exists.
+#
+# THE FIVE STEPS
+#   1  descriptors   only if the dataset predates the collectors writing them
+#   2  control       train on the SIMULATED flow. The cheap half. Run it first.
+#   3  operator      train the velocity model
+#   4  predict       run it and write samples/velocity_pred back
+#   5  flow model    train on the PREDICTED flow
+#
+#   Step 2 is deliberately before steps 3 and 4 rather than after them. It
+#   needs no velocity model at all, and it measures the ceiling a predicted
+#   field is chasing. If the true flow field does not improve the
+#   concentration model, a network trained to approximate it will not either,
+#   and the next three steps are not worth running.
+# =============================================================================
+
+# (step key, number, title, one line, which Action it runs, whether it may be
+#  skipped). Kept as data rather than as five blocks of near-identical widget
+# code, so a sixth step is a row here and nothing else.
+FLOW_STEPS = [
+    ("descriptors", "1", "Add the flow descriptors",
+     "Only if your dataset does not already carry them. Changes it in place.",
+     "flow_features", True),
+    ("control", "2", "Train on the simulated flow",
+     "The cheap half. No velocity model needed. This is the ceiling a "
+     "predicted field is chasing, so do it before building one.",
+     "train_flow_sim", True),
+    ("operator", "3", "Train the velocity operator",
+     "Pore structure and one flow number in, velocity field out, no flow solve.",
+     "train_velocity", False),
+    ("predict", "4", "Predict the flow and store it",
+     "Writes samples/velocity_pred BESIDE the simulated field, never over it.",
+     "predict_velocity", False),
+    ("flowmodel", "5", "Train on the predicted flow",
+     "The same run as step 2 with one difference: the velocity comes from the "
+     "operator, not the solver. That difference is the whole question.",
+     "train_flow_pred", False),
+]
+
+
+# Each step's own folder inside the shared results folder. Named after what
+# is in it rather than after the step number, so the folders still make sense
+# when you come back to them next month with the numbering forgotten.
+FLOW_SUBDIR = {"flow_features": None,
+               "train_flow_sim": "concentration_simulated",
+               "train_velocity": "velocity_operator",
+               "predict_velocity": "velocity_fields",
+               "train_flow_pred": "concentration_predicted"}
+
+
+def flow_step_command(actions, act_key, data, out, buffer, condition, epochs,
+                      geom):
+    """One pipeline step's Action and the exact command it will run.
+
+    A free function rather than a method, and that is deliberate. The panel is
+    a Tk widget and cannot be built without a display, so anything living
+    inside it cannot be checked by test_gui_commands.py -- which is the file
+    that would have caught a wrong flag here. This takes plain values, returns
+    the Action and its argv, and is therefore testable on a machine with no
+    screen.
+
+    Note what it does NOT do: it never assembles an argument list. It fills in
+    the fields of the ordinary Action from the catalogue and asks THAT for the
+    command. So every guarantee the command test gives about those actions it
+    gives about this pipeline as well, without knowing the pipeline exists.
+    """
+    a = actions[act_key]
+    for f in a.fields:
+        if f.var is None:
+            f.make_var()
+    sub = FLOW_SUBDIR[act_key]
+    for f in a.fields:
+        if f.key == "data":
+            f.var.set(data)
+        elif f.key == "out" and sub:
+            f.var.set(os.path.join(out, sub))
+        elif f.key == "buffer":
+            f.var.set(str(buffer))
+        elif f.key == "condition":
+            f.var.set(str(condition))
+        elif f.key == "epochs":
+            f.var.set(str(epochs))
+        elif f.key == "geom_features":
+            f.var.set(bool(geom))
+    # Step 4 is the only one that has to be told to write its fields back into
+    # the dataset, and it is off by default on its own page because writing
+    # into somebody's dataset should be asked for. Here it is the whole point:
+    # without it the pipeline runs to the end and step 5 fails on a key that
+    # was never written, which is a long way to go for a missing tick.
+    if act_key == "predict_velocity":
+        for f in a.fields:
+            if f.key == "write_back":
+                f.var.set(True)
+            elif f.key == "checkpoint":
+                f.var.set(os.path.join(out, "velocity_operator", "best.pt"))
+            # The single-geometry boxes are cleared, not left at their
+            # defaults. The pipeline always predicts for a WHOLE dataset, and
+            # a stray --pe beside --data is a flow condition that contradicts
+            # the one recorded against each run in the file.
+            elif f.key in ("geometry", "pe"):
+                f.var.set("")
+    return a, a.command()
+
+
+class FlowPipelinePage(tk.Frame):
+    """The whole flow capability, as the sequence it actually is."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
+        self.app = app
+        self.cards = {}
+        self.queue = []                 # steps still to run in a "run all"
+        self.running = None             # the step key currently running
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=12, pady=(12, 2))
+        tk.Label(head, text="The flow pipeline", bg=BG, fg=INK,
+                 font=base_font(14, True), anchor="w").pack(fill="x")
+        tk.Label(head, text="Give the concentration model the velocity field. "
+                            "Five steps, in order, on one dataset.",
+                 bg=BG, fg=MUTE, font=base_font(9), anchor="w").pack(fill="x")
+
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=6)
+        body.columnconfigure(0, weight=2, minsize=330)
+        body.columnconfigure(1, weight=5, minsize=520)
+        body.rowconfigure(0, weight=1)
+
+        # ------------------------------------------------ left: shared settings
+        # Typed ONCE and pushed into every step. The commonest way to waste an
+        # afternoon on this pipeline is to point step 4 at one dataset and step
+        # 5 at another; five separate pages make that easy and this makes it
+        # impossible.
+        left = tk.Frame(body, bg=PANEL, highlightbackground=LINE,
+                        highlightthickness=1)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        tk.Label(left, text="SHARED BY EVERY STEP", bg=HEAD, fg=INK, anchor="w",
+                 font=base_font(9, True), padx=8, pady=4).pack(fill="x")
+
+        self.v_data = tk.StringVar(value="")
+        self.v_out = tk.StringVar(value=os.path.join(NEW3D, "flow_pipeline"))
+        self.v_buffer = tk.StringVar(value="10")
+        self.v_condition = tk.StringVar(value="pe")
+        self.v_epochs = tk.StringVar(value="300")
+        self.v_geom = tk.BooleanVar(value=False)
+
+        self._box(left, "Dataset", self.v_data,
+                  "The one .h5 every step reads and writes. It must hold a "
+                  "velocity field, which means it was collected without 'skip "
+                  "the flow field'.", pick="file")
+        self._box(left, "Folder for the results", self.v_out,
+                  "Each step gets its own folder inside this one, so the two "
+                  "trained models can be compared afterwards.", pick="dir")
+        self._box(left, "Open buffer at each end, in voxels", self.v_buffer,
+                  "MUST match your campaign's padding: 10 for the published 2D "
+                  "set, 5 for the geometries this project generates, 0 for "
+                  "none. Wrong here and the pore size maps measure your padding "
+                  "instead of your rock.")
+        self._box(left, "Which condition drives the flow", self.v_condition,
+                  "The column of the parameter table the flow branch reads. "
+                  "Our datasets record the Peclet number; the published model "
+                  "uses the Reynolds number, which we do not store. The "
+                  "operator does not mind which, so long as it is the same one "
+                  "at prediction time.")
+        self._box(left, "How many passes over the data", self.v_epochs,
+                  "Applies to all three training steps. Each stops early on "
+                  "its own when the held-out error stops improving.")
+        cb = tk.Checkbutton(left, text="Also use the pore size maps (MIS, UPRM)",
+                            variable=self.v_geom, bg=PANEL, fg=INK,
+                            font=base_font(9), anchor="w",
+                            activebackground=PANEL, highlightthickness=0,
+                            command=self.refresh)
+        cb.pack(fill="x", padx=8, pady=(10, 0), anchor="w")
+        tk.Message(left, text="Adds two more branch channels: how wide the pore "
+                              "is here, and how wide the narrowest throat "
+                              "between here and the inlet is. Needs step 1 to "
+                              "have run, or a dataset collected after the "
+                              "collectors started writing them.",
+                   bg=PANEL, fg=MUTE, font=base_font(8), width=300,
+                   anchor="w", justify="left").pack(fill="x", padx=8)
+
+        hline(left)
+        tk.Button(left, text="  Run the whole pipeline  ",
+                  font=base_font(10, True), bg="#e8ecf1", padx=10, pady=4,
+                  command=self.run_all).pack(padx=8, pady=(2, 4), anchor="w")
+        tk.Button(left, text="Stop", font=base_font(9), padx=10,
+                  command=self.stop_all).pack(padx=8, pady=(0, 4), anchor="w")
+        tk.Message(left, text="Runs the ticked steps in order and stops at the "
+                              "first one that fails. Nothing is hidden: each "
+                              "command appears in the log before it starts.",
+                   bg=PANEL, fg=MUTE, font=base_font(8), width=300,
+                   anchor="w", justify="left").pack(fill="x", padx=8,
+                                                    pady=(0, 8))
+
+        # --------------------------------------------------- right: the steps
+        right = tk.Frame(body, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew")
+        rc = tk.Canvas(right, bg=BG, highlightthickness=0)
+        rsb = ttk.Scrollbar(right, orient="vertical", command=rc.yview)
+        rin = tk.Frame(rc, bg=BG)
+        rin.bind("<Configure>",
+                 lambda e: rc.configure(scrollregion=rc.bbox("all")))
+        win = rc.create_window((0, 0), window=rin, anchor="nw", width=620)
+        rc.configure(yscrollcommand=rsb.set)
+        rc.pack(side="left", fill="both", expand=True)
+        rsb.pack(side="right", fill="y")
+        rc.bind("<Configure>", lambda e: rc.itemconfigure(win, width=e.width))
+
+        for key, num, title, one, act, skippable in FLOW_STEPS:
+            self.cards[key] = self._card(rin, key, num, title, one, act,
+                                         skippable)
+
+        # The comparison is the point of the whole panel, so it is said on the
+        # panel rather than left to the tutorial.
+        tail = tk.Frame(rin, bg=PANEL, highlightbackground=LINE,
+                        highlightthickness=1)
+        tail.pack(fill="x", pady=(4, 10))
+        tk.Label(tail, text="WHEN IT HAS FINISHED", bg=WARNC, fg="#ffffff",
+                 anchor="w", font=base_font(9, True), padx=8,
+                 pady=3).pack(fill="x")
+        tk.Message(tail, width=560, bg=PANEL, fg=INK, font=base_font(9),
+                   anchor="w", justify="left",
+                   text="You have two trained models and you need a third to "
+                        "read them against: the same dataset trained with no "
+                        "flow at all, from 'Train the network'. Three numbers, "
+                        "one question.\n\n"
+                        "  no flow          what the model did before any of "
+                        "this\n"
+                        "  simulated flow   the ceiling, using the solver's own "
+                        "field\n"
+                        "  predicted flow   what you actually get\n\n"
+                        "If 'simulated' does not beat 'no flow' on your data, "
+                        "stop. The velocity information is not helping this "
+                        "dataset and no operator will change that. If it does, "
+                        "the gap between 'simulated' and 'predicted' is what "
+                        "the operator costs you.\n\n"
+                        "In two dimensions the published follow-up measured "
+                        "the median concentration RMSE falling from 0.0304 to "
+                        "0.0263, and the worst case from 0.1739 to 0.1126. "
+                        "There is no released 3D result to compare against."
+                   ).pack(fill="x", padx=10, pady=8)
+
+        self.refresh()
+
+    # ------------------------------------------------------------ small parts
+    def _box(self, parent, label, var, help_text, pick=None):
+        tk.Label(parent, text=label, bg=PANEL, fg=INK, font=base_font(9),
+                 anchor="w").pack(fill="x", padx=8, pady=(8, 0))
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", padx=8)
+        e = tk.Entry(row, textvariable=var, font=mono_font(9), relief="solid",
+                     bd=1)
+        e.pack(side="left", fill="x", expand=True)
+        e.bind("<KeyRelease>", lambda ev: self.refresh())
+        if pick:
+            tk.Button(row, text="...", font=base_font(8), padx=4,
+                      command=lambda: self._pick(var, pick)).pack(side="left",
+                                                                  padx=(3, 0))
+        tk.Message(parent, text=help_text, bg=PANEL, fg=MUTE,
+                   font=base_font(8), width=300, anchor="w",
+                   justify="left").pack(fill="x", padx=8)
+
+    def _pick(self, var, kind):
+        if kind == "file":
+            p = filedialog.askopenfilename(
+                title="Choose the dataset",
+                filetypes=[("HDF5 dataset", "*.h5"), ("All files", "*.*")])
+        else:
+            p = filedialog.askdirectory(title="Choose a folder")
+        if p:
+            var.set(p)
+            self.refresh()
+
+    def _card(self, parent, key, num, title, one, act_key, skippable):
+        f = tk.Frame(parent, bg=PANEL, highlightbackground=LINE,
+                     highlightthickness=1)
+        f.pack(fill="x", pady=(0, 8))
+        bar = tk.Frame(f, bg=HEAD)
+        bar.pack(fill="x")
+        tk.Label(bar, text=" " + num + " ", bg=INFOC, fg="#ffffff",
+                 font=base_font(11, True), padx=6, pady=3).pack(side="left")
+        tk.Label(bar, text="  " + title, bg=HEAD, fg=INK, anchor="w",
+                 font=base_font(10, True), pady=4).pack(side="left")
+        state = tk.Label(bar, text="not run", bg=HEAD, fg=MUTE,
+                         font=base_font(8, True), padx=8)
+        state.pack(side="right")
+        do = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="include", variable=do, bg=HEAD, fg=MUTE,
+                       font=base_font(8), activebackground=HEAD,
+                       highlightthickness=0,
+                       command=self.refresh).pack(side="right")
+
+        tk.Message(f, text=one, bg=PANEL, fg=MUTE, font=base_font(9),
+                   width=560, anchor="w", justify="left").pack(fill="x",
+                                                               padx=10,
+                                                               pady=(6, 2))
+        cmd = tk.Text(f, height=2, font=mono_font(8), bg="#f4f4f2", fg=INK,
+                      wrap="word", relief="solid", bd=1)
+        cmd.pack(fill="x", padx=10, pady=(2, 4))
+        btns = tk.Frame(f, bg=PANEL)
+        btns.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Button(btns, text="Run this step", font=base_font(9), padx=10,
+                  command=lambda k=key: self.run_one(k)).pack(side="left")
+        # The panel gives you the settings that matter. Everything else the
+        # script accepts is one click away, on that action's ordinary page,
+        # rather than being unreachable because it did not fit here.
+        tk.Button(btns, text="All settings for this step", font=base_font(9),
+                  padx=10,
+                  command=lambda a=act_key: self.app.open_action(a)).pack(
+                      side="left", padx=6)
+        tk.Button(btns, text="Copy command", font=base_font(9), padx=10,
+                  command=lambda k=key: self.copy_one(k)).pack(side="left")
+        return dict(frame=f, state=state, cmd=cmd, do=do, action=act_key,
+                    skippable=skippable, title=title)
+
+    # ------------------------------------------------------------- the commands
+    def _fill(self, act_key):
+        return flow_step_command(
+            self.app.actions, act_key,
+            data=str(self.v_data.get()).strip(),
+            out=str(self.v_out.get()).strip() or NEW3D,
+            buffer=str(self.v_buffer.get()).strip(),
+            condition=str(self.v_condition.get()).strip(),
+            epochs=str(self.v_epochs.get()).strip(),
+            geom=bool(self.v_geom.get()))
+
+    def refresh(self):
+        for key, c in self.cards.items():
+            try:
+                _a, cmd = self._fill(c["action"])
+                text = " ".join(_q(x) for x in cmd)
+            except Exception as e:                             # noqa: BLE001
+                text = "(cannot build this command yet: %s)" % e
+            c["cmd"].delete("1.0", "end")
+            c["cmd"].insert("1.0", text)
+            c["cmd"].configure(state="normal")
+
+    def copy_one(self, key):
+        c = self.cards[key]
+        self.clipboard_clear()
+        self.clipboard_append(c["cmd"].get("1.0", "end").strip())
+        self.app.status("Command for step '%s' copied." % c["title"])
+
+    # ------------------------------------------------------------------ running
+    def _ready(self):
+        d = str(self.v_data.get()).strip()
+        if not d:
+            messagebox.showwarning(APP, "Choose the dataset first. Every step "
+                                        "reads and writes the same .h5 file, "
+                                        "and that is the box at the top left.")
+            return False
+        if not os.path.exists(d):
+            messagebox.showwarning(APP, "That dataset is not there:\n\n%s" % d)
+            return False
+        return True
+
+    def run_one(self, key):
+        if not self._ready():
+            return
+        self.queue = []
+        self._start(key)
+
+    def run_all(self):
+        if not self._ready():
+            return
+        self.queue = [k for k, _n, _t, _o, _a, _s in FLOW_STEPS
+                      if self.cards[k]["do"].get()]
+        if not self.queue:
+            messagebox.showinfo(APP, "Every step is unticked, so there is "
+                                     "nothing to run.")
+            return
+        for k in self.queue:
+            self._mark(k, "waiting", MUTE)
+        self._next()
+
+    def _next(self):
+        if not self.queue:
+            self.app.status("The flow pipeline finished.")
+            return
+        self._start(self.queue.pop(0))
+
+    def _start(self, key):
+        c = self.cards[key]
+        a, cmd = self._fill(c["action"])
+        if not os.path.exists(a.script):
+            self._mark(key, "script missing", ERRC)
+            self.queue = []
+            messagebox.showerror(APP, "Cannot find the script this step runs:"
+                                      "\n\n%s" % a.script)
+            return
+        try:
+            for f in a.fields:
+                if f.key == "out" and str(f.value()).strip():
+                    os.makedirs(str(f.value()).strip(), exist_ok=True)
+        except Exception:                                      # noqa: BLE001
+            pass
+        self.running = key
+        self._mark(key, "running", INFOC)
+        self.app.on_run_finished = self._finished
+        self.app.launch(a, cmd, None)
+
+    def _finished(self, rc):
+        key, self.running = self.running, None
+        if key is None:
+            return
+        if rc == 0:
+            self._mark(key, "done", OKC)
+            # Only a "run the whole pipeline" has a queue. A single step
+            # finishing must not start anything the user did not ask for.
+            self._next()
+        else:
+            self._mark(key, "FAILED", ERRC)
+            # Stop, rather than carry on into a step whose input was never
+            # written. The log already says what failed and why.
+            if self.queue:
+                self.queue = []
+                self.app.logline(
+                    "The pipeline stopped here. The steps after this one read "
+                    "what this one was supposed to write, so running them now "
+                    "would fail on a missing key instead of on the real "
+                    "problem.", "warn")
+
+    def stop_all(self):
+        self.queue = []
+        self.app.stop_run()
+
+    def _mark(self, key, text, colour):
+        try:
+            self.cards[key]["state"].configure(text=text, fg=colour)
+        except Exception:                                      # noqa: BLE001
+            pass
 
 class Viewer(tk.Frame):
     """Shows everything a file contains, not a chosen list of fields.
@@ -5157,6 +5965,12 @@ class Studio(tk.Tk):
         self.total_steps = None
         self.run_action = None
         self.run_cmd = None
+        # Set by the flow pipeline panel while it is driving a sequence, and
+        # called once with the exit code when the run ends. One slot, not a
+        # list of listeners: only one thing can be running at a time, so only
+        # one thing can be waiting for it.
+        self.on_run_finished = None
+        self.flow = None
 
         self.style = ttk.Style(self)
         try:
@@ -5352,6 +6166,10 @@ class Studio(tk.Tk):
 
         self.viewer = Viewer(self.tabs, self)
         self.tabs.add(self.viewer, text="Viewer")
+        # Built once and kept, not rebuilt per visit, so the boxes you filled
+        # in and the state of the five steps survive a trip to another page.
+        self.flow = FlowPipelinePage(self.tabs, self)
+        self.tabs.add(self.flow, text="Flow pipeline")
 
         # ---- bottom: log / problems / monitor
         lower = tk.Frame(self.split, bg=BG, height=220)
@@ -5428,12 +6246,13 @@ class Studio(tk.Tk):
                 node = self.tree.insert("", "end", text=" " + g, open=True)
                 for k in keys:
                     self.tree.insert(node, "end", iid="act:" + k, text=label(k))
+            self._flow_group()
             look = self.tree.insert("", "end", text=" Look at results", open=True)
             self.tree.insert(look, "end", iid="view",
                              text="   Viewer  (open a dataset or a prediction)")
             helpn = self.tree.insert("", "end", text=" Help", open=True)
             self.tree.insert(helpn, "end", iid="tut",
-                             text="   Tutorial  (five worked projects)")
+                             text="   Tutorial  (six worked projects)")
             self.tree.insert(helpn, "end", iid="act:capabilities",
                              text=label("capabilities"))
         else:
@@ -5446,6 +6265,7 @@ class Studio(tk.Tk):
                 node = self.tree.insert("", "end", text=" " + g, open=True)
                 for k in keys:
                     self.tree.insert(node, "end", iid="act:" + k, text=label(k))
+            self._flow_group()
             pub = self.tree.insert("", "end",
                                    text=" The published release", open=True)
             self.tree.insert(pub, "end", iid="2d:browse",
@@ -5461,7 +6281,7 @@ class Studio(tk.Tk):
                              text="   Viewer  (open a dataset or a prediction)")
             helpn = self.tree.insert("", "end", text=" Help", open=True)
             self.tree.insert(helpn, "end", iid="tut",
-                             text="   Tutorial  (five worked projects)")
+                             text="   Tutorial  (six worked projects)")
             self.tree.insert(helpn, "end", iid="act:capabilities",
                              text=label("capabilities"))
 
@@ -5469,6 +6289,26 @@ class Studio(tk.Tk):
         # else did. Kept where every other control lives.
         self.tree.insert("", "end", iid="stop",
                          text=" Stop what is running  (halts the current job)")
+
+    def _flow_group(self):
+        """The sidebar group for the whole flow capability.
+
+        The PANEL comes first and the three individual scripts sit under it,
+        indented, rather than the other way round. That order is the advice:
+        the pipeline is the thing to open, and the separate pages are there
+        for when you already know which single step you want to redo.
+
+        The same group appears in BOTH modes. The published follow-up is a 2D
+        result, so hiding the 2D route to it would be exactly backwards.
+        """
+        name, keys = FLOW_SIDEBAR
+        n = self.tree.insert("", "end", text=" " + name, open=True)
+        self.tree.insert(n, "end", iid="flow",
+                         text="   The flow pipeline  (all five steps, in order)")
+        for k in keys:
+            if k in self.actions:
+                self.tree.insert(n, "end", iid="act:" + k,
+                                 text="      " + self.actions[k].title)
 
     def on_mode(self):
         if self.mode.get() == "3D":
@@ -5489,6 +6329,8 @@ class Studio(tk.Tk):
         iid = sel[0]
         if iid.startswith("act:"):
             self.open_action(iid[4:])
+        elif iid == "flow":
+            self.tabs.select(self.flow)
         elif iid == "view":
             self.tabs.select(self.viewer)
         elif iid == "tut":
@@ -5660,6 +6502,15 @@ class Studio(tk.Tk):
         self.errors = []
         self.run_action = None
         self.update_monitor(final=True, secs=secs)
+        # Whoever is driving a sequence hears the result LAST, after the log
+        # and the progress bar have been told, so the next step starts against
+        # a window that already shows how the previous one ended.
+        cb, self.on_run_finished = self.on_run_finished, None
+        if cb is not None:
+            try:
+                cb(rc)
+            except Exception:                                  # noqa: BLE001
+                pass
 
     def _pump(self):
         if not self.winfo_exists():

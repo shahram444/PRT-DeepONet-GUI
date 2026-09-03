@@ -1,4 +1,42 @@
 #!/usr/bin/env python3
+# =============================================================================
+# CHANGED FROM THE 2D VERSION
+#
+#   WHAT CHANGED HERE, IN ONE LINE
+#     This file learned the FLOW PIPELINE: the velocity field can be handed to
+#     concentration branch as extra image channels, with the trunk untouched.
+#
+#   WHERE THE IDEA CAME FROM
+#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
+#     concentration/  (their PRTDeepONet takes branch1 = [mask, ux, uy])
+#     described in Jo, Kim, Kim, Lim, Choi, Ryu and Jung, SSRN 7388394.
+#
+#   THE FOUR ADDITIONS, IN THE ORDER YOU MEET THEM BELOW
+#     1. VELOCITY_SOURCES and the velocity_informed / geom_features arguments
+#        to resolve_switches(). Three values: off, simulated, predicted.
+#        'simulated' reads samples/velocity, what the flow solver actually
+#        produced. 'predicted' reads samples/velocity_pred, what
+#        predict_velocity.py --write-back left behind.
+#     2. A NEW BRANCH IN resolve_switches(), placed AFTER switch A's branch and
+#        BEFORE the all-off branch. Order matters: A and D are alternatives and
+#        train.py refuses both, so whichever is checked first would silently
+#        win otherwise.
+#     3. _velocity_stats(), which z scores the velocity before it reaches the
+#        branch. This is not cosmetic. Raw lattice velocity is around 1e-4
+#        while the pore mask channel is 0 or 1, so an unscaled velocity channel
+#        arrives four orders of magnitude below its neighbour and the first
+#        convolution barely sees it.
+#     4. FOUR GUARDS that refuse to run rather than train on something wrong:
+#        simulated without samples/velocity, predicted without
+#        samples/velocity_pred, geom_features without geom/mis and geom/uprm,
+#        and an unrecognised velocity_informed value. Each names the command
+#        that fixes it.
+#
+#   WHAT DID NOT CHANGE
+#     With velocity_informed='off' every path through this file is the one it
+#     had before. 3D/tools/test_three_switches.py proves that bit for bit
+#     against a copy of the original implementation.
+# =============================================================================
 """
 dataset_reader.py — PyTorch Dataset over dataset_reader.h5, shaped exactly the way
 the 3D PRT-DeepONet consumes it.  This is the "ready for the model" layer.
@@ -86,9 +124,13 @@ PORE = 2
 FLOW_MODES = ("tau", "speed", "both")
 
 
+VELOCITY_SOURCES = ("off", "simulated", "predicted")
+
+
 def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
                      with_velocity=False, with_time=True,
-                     flow_mode="tau", keep_geometry_channel=False, ndim=3):
+                     flow_mode="tau", keep_geometry_channel=False, ndim=3,
+                     velocity_informed="off", geom_features=False):
     """The one place the switch semantics live.
 
     Returns a dict describing the concrete configuration:
@@ -102,6 +144,16 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
     """
     if dim_free:
         flow_proxy = True                       # C implies A
+
+    # VELOCITY INFORMED. The published follow-up hands the CONCENTRATION
+    # branch the velocity field as extra image channels and leaves the trunk alone.
+    # It is not switch A: A REPLACES the geodesic distance with a flow coordinate in
+    # the trunk, D leaves the trunk exactly as it was and adds to the branch. Their
+    # own control settles why: the same velocity fed to the trunk pointwise recovered
+    # almost none of the gain, so what matters is that a convolution can see the field
+    # as a field.
+    if velocity_informed not in VELOCITY_SOURCES:
+        raise ValueError("velocity_informed must be one of %s" % (VELOCITY_SOURCES,))
 
     # A 2D dataset (nz = 1) has no third coordinate to give the trunk, and its
     # z column would be a constant, i.e. a dead input.  Dropping it reproduces
@@ -125,7 +177,26 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
             label = "A flow-proxy  trunk (%s)" % ", ".join(cols)
         return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
                     in_channels=len(branch), film=True, needs_flow=True,
-                    flow_proxy=True, dim_free=bool(dim_free), label=label)
+                    flow_proxy=True, dim_free=bool(dim_free),
+                    velocity_informed="off", geom_features=False, label=label)
+
+    # ---- VELOCITY INFORMED, new in v1.2 ------------------------------------
+    # Placed AFTER switch A's branch above and BEFORE the all-off branch below.
+    # The order is deliberate: A and D are alternatives, train.py refuses both,
+    # and whichever branch came first would silently win if that guard were ever
+    # removed. The trunk here is the ORDINARY trunk. That is the whole point of
+    # this branch: the geometry feature stays, the velocity is added beside it.
+    if velocity_informed != "off":
+        branch = ["material"] + vel_ch + (["mis", "uprm"] if geom_features else [])
+        cols = space + (["t"] if with_time else [])
+        if distance != "none":
+            cols = cols + [distance]
+        return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
+                    in_channels=len(branch), film=(distance != "none"),
+                    needs_flow=False, flow_proxy=False, dim_free=False,
+                    velocity_informed=velocity_informed, geom_features=bool(geom_features),
+                    label="D velocity-informed (%s)  branch (%s)  trunk (%s)"
+                          % (velocity_informed, ", ".join(branch), ", ".join(cols)))
 
     # ---- all switches off: the original behaviour, unchanged ----------------
     branch = ["material"] + (vel_ch if with_velocity else [])
@@ -135,6 +206,7 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
     return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
                 in_channels=len(branch), film=(distance != "none"),
                 needs_flow=False, flow_proxy=False, dim_free=False,
+                velocity_informed="off", geom_features=False,
                 label="OFF  trunk (%s)" % ", ".join(cols))
 
 
@@ -149,7 +221,8 @@ def dwall_scale(ny, nz):
 
 
 SWITCH_KEYS = ("flow_proxy", "dim_free", "flow_mode", "keep_geometry_channel",
-               "u_floor", "distance", "with_velocity")
+               "u_floor", "distance", "with_velocity",
+               "velocity_informed", "geom_features")
 
 
 def dataset_kwargs_from_ckpt(ck):
@@ -168,7 +241,9 @@ def dataset_kwargs_from_ckpt(ck):
               dim_free=bool(ta.get("dim_free", False)),
               flow_mode=ta.get("flow_mode", "tau"),
               keep_geometry_channel=bool(ta.get("keep_geometry_channel", False)),
-              u_floor=float(ta.get("u_floor", 0.01)))
+              u_floor=float(ta.get("u_floor", 0.01)),
+              velocity_informed=ta.get("velocity_informed", "off"),
+              geom_features=bool(ta.get("geom_features", False)))
     ndim = 2 if (ck.get("grid") and int(ck["grid"][2]) == 1) else 3
     cfg = resolve_switches(ndim=ndim,
                            **{k: v for k, v in kw.items() if k != "u_floor"})
@@ -219,7 +294,8 @@ class PRT3DDataset(Dataset):
                  with_velocity=False, distance="gdf", normalize=True,
                  time_index=None, seed=0, with_time=None,
                  flow_proxy=False, dim_free=False, flow_mode="tau",
-                 keep_geometry_channel=False, u_floor=0.01, source_tag=0):
+                 keep_geometry_channel=False, u_floor=0.01, source_tag=0,
+                 velocity_informed="off", geom_features=False):
         self.h5path = h5path
         self.n_points = int(n_points)
         self.full_grid = bool(full_grid)
@@ -232,7 +308,10 @@ class PRT3DDataset(Dataset):
         self.flow_mode = flow_mode
         self.keep_geometry_channel = bool(keep_geometry_channel)
         self.u_floor = float(u_floor)
+        self.velocity_informed = str(velocity_informed)
+        self.geom_features = bool(geom_features)
         self.source_tag = int(source_tag)      # 0 = 3D native, 1 = extruded 2D
+        self._vel_stats = None                 # (mu, sd) per component, computed once
         self._flow_cache = {}                  # geom index -> (vel_norm, tau)
         self.stagnant_by_geom = {}             # geom index -> stagnant fraction
         self._h = None
@@ -261,6 +340,7 @@ class PRT3DDataset(Dataset):
             self.T = int(h["samples/conc"].shape[1])
             self.C = int(h["samples/conc"].shape[2])
             self.has_velocity = "velocity" in h["samples"]
+            self.has_velocity_pred = "velocity_pred" in h["samples"]
             self._geom_keys = set(h["geom"].keys())
             self.geom_index = h["samples/geom_index"][:]
             self.params = h["samples/params"][:]
@@ -280,7 +360,8 @@ class PRT3DDataset(Dataset):
             flow_proxy=self.flow_proxy, dim_free=self.dim_free, distance=distance,
             with_velocity=self.with_velocity, with_time=self.with_time,
             flow_mode=self.flow_mode, keep_geometry_channel=self.keep_geometry_channel,
-            ndim=self.ndim)
+            ndim=self.ndim, velocity_informed=self.velocity_informed,
+            geom_features=self.geom_features)
         self.trunk_cols = self.cfg["trunk_cols"]
         self.branch_ch = self.cfg["branch_ch"]
         self.in_channels = self.cfg["in_channels"]
@@ -290,6 +371,22 @@ class PRT3DDataset(Dataset):
             raise ValueError(
                 "--flow-proxy / --dim-free need the velocity field, but this file has "
                 "no /samples/velocity. Re-run collect_complab_output.py WITHOUT --no-velocity.")
+        if self.velocity_informed == "simulated" and not self.has_velocity:
+            raise ValueError(
+                "velocity_informed='simulated' needs samples/velocity, and this file "
+                "has none. Collect the campaign again without --no-velocity.")
+        if self.velocity_informed == "predicted" and not self.has_velocity_pred:
+            raise ValueError(
+                "velocity_informed='predicted' needs samples/velocity_pred, and this "
+                "file has none. Write it first:\n"
+                "  python 3D/model/predict_velocity.py --checkpoint runs/vel/best.pt "
+                "--data <this file> --write-back")
+        if self.geom_features and not {"mis", "uprm"} <= self._geom_keys:
+            raise ValueError(
+                "geom_features=True needs geom/mis and geom/uprm, and this file has "
+                "%s. Add them without recollecting:\n"
+                "  python 3D/tools/add_flow_features.py --data <this file>"
+                % (sorted(self._geom_keys & {"mis", "uprm"}) or "neither"))
         if "edt" not in self._geom_keys and self.dim_free:
             raise ValueError("--dim-free needs geom/edt (the wall distance); this file "
                              "has none. Re-run collect_complab_output.py.")
@@ -350,6 +447,33 @@ class PRT3DDataset(Dataset):
         self._flow_cache[g] = (vn, tau.astype(np.float32))
         return self._flow_cache[g]
 
+    def _velocity_stats(self):
+        """Mean and standard deviation of each velocity component, over pore voxels.
+
+        The published follow-up z scores the velocity before it reaches the branch, and
+        it matters more than it looks. The raw field spans about 1e-4 in lattice units
+        while the pore mask channel is 0 or 1, so an unscaled velocity channel arrives
+        four orders of magnitude below its neighbour and the first convolution barely
+        registers it. Computed once over the runs this Dataset was given, so a training
+        split and its held-out split do not scale differently.
+        """
+        if self._vel_stats is not None:
+            return self._vel_stats
+        key = "samples/velocity_pred" if self.velocity_informed == "predicted" \
+            else "samples/velocity"
+        nvel = sum(1 for c in self.branch_ch if c in ("ux", "uy", "uz"))
+        take = self.indices[:min(64, len(self.indices))]
+        acc = [[] for _ in range(nvel)]
+        for si in take:
+            v = self.h[key][int(si)].astype(np.float32)
+            m = self.h["geom/material"][int(self.geom_index[int(si)])] == PORE
+            for c in range(nvel):
+                acc[c].append(v[c][m])
+        mu = np.array([np.concatenate(a).mean() for a in acc], np.float32)
+        sd = np.array([max(float(np.concatenate(a).std()), 1e-30) for a in acc], np.float32)
+        self._vel_stats = (mu, sd)
+        return self._vel_stats
+
     def __getitem__(self, k):
         s, t = self._decode(k)
         g = int(self.geom_index[s])
@@ -366,12 +490,34 @@ class PRT3DDataset(Dataset):
             if name == "material":
                 chans.append((mat == PORE).astype(np.float32)[None])
             elif name == "ux":                      # the velocity arrives whole
-                v = (vn if vn is not None
-                     else self.h["samples/velocity"][s].astype(np.float32))
                 nvel = sum(1 for c in self.branch_ch if c in ("ux", "uy", "uz"))
+                if vn is not None:
+                    v = vn
+                elif self.velocity_informed != "off":
+                    key = ("samples/velocity_pred"
+                           if self.velocity_informed == "predicted"
+                           else "samples/velocity")
+                    v = self.h[key][s].astype(np.float32)
+                    mu, sd = self._velocity_stats()
+                    v = (v[:nvel] - mu[:, None, None, None]) / sd[:, None, None, None]
+                    v[:, mat != PORE] = 0.0         # a grain carries no velocity
+                else:
+                    v = self.h["samples/velocity"][s].astype(np.float32)
                 chans.append(v[:nvel])              # 2 components in 2D, 3 in 3D
             elif name in ("uy", "uz"):
                 continue                            # consumed by the 'ux' branch
+            elif name in ("mis", "uprm"):
+                # Both are stored in VOXELS, unscaled, so the file stays readable
+                # by eye. The z-score constants ride along as attributes on the
+                # dataset rather than being hard-coded here, because they are a
+                # property of the campaign, not of the method.
+                f = self.h["geom/" + name][g].astype(np.float32)
+                a = self.h["geom/" + name].attrs
+                mu = float(a.get(name + "_mu", 0.0))
+                sd = float(a.get(name + "_sd", 1.0)) or 1.0
+                f = (f - mu) / sd
+                f[mat != PORE] = 0.0
+                chans.append(f[None])
         branch1 = np.concatenate(chans, 0)
 
         branch2 = self.params[s].astype(np.float32).copy()
