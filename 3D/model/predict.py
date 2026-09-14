@@ -29,10 +29,15 @@ PROCESS
     dense volume rather than the 8192-point subsample used during training.
 
 OUTPUT
-    pred.npz            all 4 fields as (4, nx, ny, nz) float32, plus metadata
-    <species>.vti       one VTK ImageData per species, openable in ParaView
+    pred.npz            the predicted field as (nx, ny, nz) float32 under
+                        'concentration', the species name as a string under
+                        'species', plus the geometry and the conditions
+    <species>_pred.vti  a VTK ImageData of the predicted field, for ParaView
                         directly alongside CompLaB's own .vti output
-    pred_slices.png     mid-plane slices of each field
+    pred_2d.png         mid-plane slices: flow, the rate fields, the field
+    pred_3d.png         the same three physics panels in 3D
+    pred_3d_conc.png    the predicted field in 3D
+    time_series.png/.npz  with --t-series K
     timing printed to stdout, which is your speedup number for the paper
 """
 
@@ -97,11 +102,11 @@ def write_time_series(series, ts, mat, species, raw, pnames, args):
     """One row of mid-plane slices per quantity, one column per time."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    rates = [make_figures.reaction_rates(series[j], species, raw, pnames) for j in range(len(ts))]
+    rates = [make_figures.reaction_rates(series[j], species, raw, pnames)
+             for j in range(len(ts))]
     rows = [("BIOTIC  R_bio", [r[0] for r in rates], "YlGn"),
-            ("ABIOTIC  R_abio", [r[1] for r in rates], "OrRd")]
-    rows += [(sp, [series[j][i] for j in range(len(ts))], "viridis")
-             for i, sp in enumerate(species)]
+            ("ABIOTIC  R_abio", [r[1] for r in rates], "OrRd"),
+            (str(species), [series[j] for j in range(len(ts))], "viridis")]
     rows = [r for r in rows if all(a is not None for a in r[1])]
 
     z = mat.shape[2] // 2
@@ -127,7 +132,7 @@ def write_time_series(series, ts, mat, species, raw, pnames, args):
     plt.close(fig)
     np.savez_compressed(os.path.join(args.out, "time_series.npz"),
                         concentration=series, t_norm=ts,
-                        species=np.array(species, dtype="S8"), material=mat)
+                        species=str(species), material=mat)
     print("  time     : %d snapshots written to time_series.png / .npz" % len(ts))
 
 
@@ -181,7 +186,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ck = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    ta = ck["args"]; species = ck["species"]; pnames = ck["param_names"]
+    ta = ck["args"]; pnames = ck["param_names"]
+    from dataset_reader import species_of_ckpt
+    # The model predicts ONE field, so this is one name. species_of_ckpt also
+    # accepts an older checkpoint that stored a LIST here, by taking its first
+    # entry.
+    species = species_of_ckpt(ck) or "C"
     print("checkpoint : %s" % args.checkpoint)
     print("  species  : %s" % species)
     # trunk width comes from the checkpoint. Older checkpoints predate the field,
@@ -217,12 +227,8 @@ def main():
 
     in_ch = ck.get("in_channels", _cfg["in_channels"])
     model = PRT_DeepONet3D(in_channels=in_ch, n_params=len(pnames),
-                           n_species=len(species),
                            trunk_in_dim=trunk_in_dim,
-                           grid=(nx, ny, nz),
-                           inject_every=(ta.get("inject_every", 3)
-                                         if _cfg["film"] else 0)
-                           ).to(device).eval()
+                           grid=(nx, ny, nz)).to(device).eval()
     # SAY WHAT IS WRONG, IN WORDS, BEFORE TORCH SAYS IT IN TENSOR SHAPES.
     #
     # The geometry encoder's depth and its fully-connected width both follow
@@ -287,8 +293,30 @@ def main():
             continue
     b1 = torch.from_numpy(np.concatenate(b1, 0))[None].to(device)
 
-    raw = np.array([args.pe, args.da_bio, args.da_abio,
-                    args.ks_ac, args.ks_a, args.y], np.float32)
+    # THE PARAMETER ROW, BUILT BY NAME rather than by position, because a
+    # dataset records either the two columns the published model uses, (pe,
+    # da), or the full six. A positional slice would have quietly fed da_bio
+    # into a column that meant da_abio on an abiotic-only dataset.
+    # Which Damkohler the single da column holds is recorded on the
+    # checkpoint; older ones do not say, and the biotic number is the default
+    # the rest of this script already assumes.
+    _da_col = str(ck.get("da_column") or "da_bio").lower()
+    _have = {"pe": args.pe,
+             "da": args.da_abio if _da_col == "da_abio" else args.da_bio,
+             "da_bio": args.da_bio, "da_abio": args.da_abio,
+             "ks_ac_norm": args.ks_ac, "ks_a_norm": args.ks_a,
+             "y_norm": args.y}
+    _missing = [n for n in pnames if str(n).lower() not in _have]
+    if _missing:
+        sys.exit("this checkpoint's parameter branch wants %s, and this script "
+                 "has no flag for %s. Predict with a checkpoint trained on a "
+                 "dataset this script knows."
+                 % (", ".join(str(n) for n in pnames),
+                    ", ".join(str(n) for n in _missing)))
+    raw = np.array([_have[str(n).lower()] for n in pnames], np.float32)
+    if _da_col == "da_abio":
+        print("  note: this model's single Da column is the ABIOTIC Damkohler "
+              "number, so --da-abio is the one it responds to")
 
     # ---- is this a question the network was ever taught to answer? --------
     #
@@ -324,7 +352,10 @@ def main():
               "on. Retrain to get that check.")
 
     b2 = raw.copy()
-    b2[:3] = np.log10(np.maximum(b2[:3], 1e-12))     # same transform as training
+    # the same transform as training, and by name for the same reason
+    _lg = [i for i, n in enumerate(pnames)
+           if str(n).lower() == "pe" or str(n).lower().startswith("da")]
+    b2[_lg] = np.log10(np.maximum(b2[_lg], 1e-12))
     b2 = torch.from_numpy(b2)[None].to(device)
 
     # ---- trunk over every pore voxel, in chunks ----------------------------
@@ -355,7 +386,7 @@ def main():
     trunk = np.stack([np.asarray(c, np.float32) for c in cols], 1)
 
     t0 = time.time()
-    out = np.empty((len(pore_idx), len(species)), np.float32)
+    out = np.empty(len(pore_idx), np.float32)
     with torch.no_grad():
         for s in range(0, len(trunk), args.chunk):
             tk = torch.from_numpy(trunk[s:s + args.chunk])[None].to(device)
@@ -364,9 +395,9 @@ def main():
         torch.cuda.synchronize()
     t_inf = time.time() - t0
 
-    # ---- back to dense volumes --------------------------------------------
-    vol = np.full((len(species), nx, ny, nz), np.nan, np.float32)
-    vol[:, xi, yi, zi] = out.T
+    # ---- back to a dense volume -------------------------------------------
+    vol = np.full((nx, ny, nz), np.nan, np.float32)
+    vol[xi, yi, zi] = out
 
     # ---- derived FLOW / BIOTIC / ABIOTIC fields ----------------------------
     velfield = None
@@ -421,7 +452,7 @@ def main():
                 print("  times   : log-spaced (this checkpoint predates the "
                       "recording of the training time ladder). Evenly spaced "
                       "times would put almost every frame after the transient.")
-            series = np.empty((len(ts), len(species), nx, ny, nz), np.float32)
+            series = np.empty((len(ts), nx, ny, nz), np.float32)
             series[:] = np.nan
             with torch.no_grad():
                 # The time column is NOT always index 3. resolve_switches puts
@@ -433,15 +464,15 @@ def main():
                 t_col = _cfg["trunk_cols"].index("t")
                 for j, tv in enumerate(ts):
                     tr = trunk.copy(); tr[:, t_col] = tv
-                    o = np.empty((len(pore_idx), len(species)), np.float32)
+                    o = np.empty(len(pore_idx), np.float32)
                     for c in range(0, len(tr), args.chunk):
                         tk = torch.from_numpy(tr[c:c + args.chunk])[None].to(device)
                         o[c:c + args.chunk] = model(b1, b2, tk)[0].cpu().numpy()
-                    series[j][:, xi, yi, zi] = o.T
+                    series[j][xi, yi, zi] = o
             write_time_series(series, ts, mat, species, raw, pnames, args)
 
     save = dict(concentration=vol, material=mat, gdf=gdf,
-                species=np.array(species, dtype="S8"),
+                species=str(species),
                 params=raw, param_names=np.array(pnames, dtype="S16"),
                 t_norm=args.t_norm)
     if R_bio is not None:  save["R_bio"] = R_bio
@@ -450,8 +481,8 @@ def main():
     np.savez_compressed(os.path.join(args.out, "pred.npz"), **save)
 
     if not args.no_vti:
-        for i, sp in enumerate(species):
-            write_vti(os.path.join(args.out, "%s_pred.vti" % sp), np.nan_to_num(vol[i]), sp)
+        write_vti(os.path.join(args.out, "%s_pred.vti" % species),
+                  np.nan_to_num(vol), species)
         if R_bio is not None:
             write_vti(os.path.join(args.out, "R_bio_pred.vti"), np.nan_to_num(R_bio), "R_bio")
         if R_abio is not None:
@@ -464,16 +495,16 @@ def main():
         render_2d(mat, panels, os.path.join(args.out, "pred_2d.png"), ttl + "   (mid-plane slice)")
         render_3d(mat, panels[:3], os.path.join(args.out, "pred_3d.png"),
                   ttl + "   (3D, half cut away)")
-        render_3d(mat, panels[3:], os.path.join(args.out, "pred_3d_species.png"),
-                  ttl + "   (species, 3D, half cut away)")
-        print("  figures  : pred_2d.png, pred_3d.png, pred_3d_species.png")
+        render_3d(mat, panels[3:], os.path.join(args.out, "pred_3d_conc.png"),
+                  ttl + "   (%s, 3D, half cut away)" % species)
+        print("  figures  : pred_2d.png, pred_3d.png, pred_3d_conc.png")
     except Exception as e:
         print("  (figures skipped: %s)" % e)
 
-    print("\nper-species range (normalised units):")
-    for i, sp in enumerate(species):
-        v = vol[i][~np.isnan(vol[i])]
-        print("  %-5s min %+.4f  mean %+.4f  max %+.4f" % (sp, v.min(), v.mean(), v.max()))
+    print("\npredicted range (normalised units):")
+    _v = vol[~np.isnan(vol)]
+    print("  %-5s min %+.4f  mean %+.4f  max %+.4f"
+          % (species, _v.min(), _v.mean(), _v.max()))
     print("\ntiming on %s" % device)
     print("  geometry prep (incl. geodesic) : %7.3f s   <- once per geometry, cacheable" % t_prep)
     print("  network inference              : %7.3f s   <- this is the number to quote" % t_inf)

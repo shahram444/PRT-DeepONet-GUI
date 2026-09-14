@@ -72,6 +72,9 @@ import h5py
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings_and_units import (add_param_layout_argument,           # noqa: E402
+                      param_layout_names, param_row,
+                      write_param_layout_attrs)
 from build_practice_dataset import geodesic, stokes, adr                      # noqa: E402
 from prtlb_3d import (check_physics, keep_inlet_connected,          # noqa: E402
                       assert_finite_distance)
@@ -260,6 +263,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--target-shape", type=int, nargs=3, default=[128, 64, 64],
                     help="must match the 3D dataset exactly, or train.py refuses")
+    add_param_layout_argument(ap)
     ap.add_argument("--n-sets", type=int, default=3, help="parameter sets per domain")
     ap.add_argument("--n-times", type=int, default=21)
     ap.add_argument("--n-species", type=int, default=4)
@@ -298,7 +302,9 @@ def main():
     a.n_species = len(species)
     # collect_complab_output.py's names, so every writer in this project agrees and the rate
     # figures do not silently fall back to their defaults.
-    pnames = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+    # must match the 3D dataset this set is mixed into; train.py refuses a
+    # mismatch rather than truncating one of them
+    pnames = param_layout_names(a.params)
 
     # ---- 1. get the 2D domains ------------------------------------------
     if a.jung_dir:
@@ -402,7 +408,8 @@ def main():
             pe = float(10 ** rng.uniform(np.log10(0.3), np.log10(30)))
             da = float(10 ** rng.uniform(-1, 1))
             gi[k] = i
-            par[k] = [pe, da, da, 0.1, 0.1, 0.05]
+            par[k] = param_row(a.params, pe, da, da, 0.1, 0.1, 0.05,
+                               biotic=True)
             vel[k] = tile_z(vels_s[i])
             nfo = {}
             cc, tt = adr(mats_s[i], vels_s[i], pe, da, T, C,
@@ -427,6 +434,7 @@ def main():
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["species"] = np.array([s.encode() for s in species])
         h.attrs["param_names"] = np.array([s.encode() for s in pnames])
+        write_param_layout_attrs(h, a.params, True)
         h.attrs["source"] = b"extruded_2d"
         h.attrs["z_walls"] = bool(a.z_walls)
         h.attrs["max_z_variation"] = float(max(zvar))

@@ -77,6 +77,11 @@ def main():
                     help="Pe and Da combinations per structure")
     ap.add_argument("--n-times", type=int, default=8, help="snapshots per run")
     ap.add_argument("--n-species", type=int, default=2)
+    ap.add_argument("--params", choices=["pe_da", "full"], default="pe_da",
+                    help="passed straight to build_dataset_2d.py. 'pe_da' "
+                         "records Pe and Da, which is what the model's "
+                         "parameter branch takes; 'full' records all six "
+                         "dimensionless groups.")
     ap.add_argument("--pe-min", type=float, default=3.0,
                     help="see the note at the top on why this is not 0.3")
     ap.add_argument("--pe-max", type=float, default=50.0)
@@ -98,14 +103,6 @@ def main():
         a.n_geom = max(4, a.n_geom // 2)
         a.n_sets = max(2, a.n_sets // 2)
 
-    # =========================================================================
-    # BLOCK 1.  WHERE EVERYTHING GOES
-    #
-    # Two things come out of this script and they must not be mixed: a training
-    # set, and a handful of structures that are NOT in it. Predicting on a
-    # structure the network trained on tells you nothing, and the easiest way
-    # to do that by accident is to keep both in one folder.
-    # =========================================================================
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     pred_dir = os.path.join(out, "predict_me")
@@ -118,17 +115,11 @@ def main():
     print("1/2  training set: %d structures x %d parameter sets"
           % (a.n_geom, a.n_sets))
     print("=" * 70)
-    # =========================================================================
-    # BLOCK 2.  THE TRAINING SET
-    #
-    # Not built here. It shells out to build_dataset_2d.py, the same generator
-    # a real campaign uses, so this pack exercises the real path rather than a
-    # simplified copy of it that could drift.
-    # =========================================================================
     cmd = [sys.executable, os.path.join(HERE, "build_dataset_2d.py"),
            "--out", train_h5, "--n-geom", str(a.n_geom),
            "--n-sets", str(a.n_sets), "--n-times", str(a.n_times),
            "--n-species", str(a.n_species), "--shape", str(nx), str(ny),
+           "--params", a.params,
            "--stokes-iters", str(a.stokes_iters), "--seed", str(a.seed),
            "--pe-min", str(a.pe_min), "--pe-max", str(a.pe_max)]
     if a.adr_steps is not None:
@@ -143,13 +134,6 @@ def main():
           % a.n_predict)
     print("=" * 70)
     # a different seed stream, so these cannot collide with the training set
-    # =========================================================================
-    # BLOCK 3.  THE HELD-OUT STRUCTURES
-    #
-    # A DIFFERENT SEED STREAM, offset far enough that it cannot overlap the
-    # training generator's. Reusing the seed would produce the same rocks and
-    # quietly turn the honest test into a memorisation check.
-    # =========================================================================
     rng = np.random.default_rng(a.seed + 100000)
     made = 0
     names = "ABCDEFGH"
@@ -157,13 +141,9 @@ def main():
         phi = 0.58 + 0.22 * rng.random()
         g = blob_2d((nx, ny), phi, rng, sigma=3.0)
         g, _ = keep_spanning_cluster(g)
-        # Rejected, not repaired. A non-percolating rock has no flow to predict,
-        # and nudging the porosity until one appears biases the whole set.
         if not percolates(g):
             continue
         nm = names[made]
-        # The flow is solved and stored beside each held-out rock, so a
-        # prediction run needs no solver of its own.
         v = stokes_d2q9(g, nit=a.stokes_iters)
         np.savez_compressed(
             os.path.join(pred_dir, "geom_%s.npz" % nm),
@@ -250,13 +230,13 @@ switches replace the geometry with it:
 The grid is %d x %d, which is the published release's grid, so the published
 trained weights can warm-start on this data:
    python <T>/load_pretrained_2d_weights.py --checkpoint <2D>/parameters/Monod.pt \\
-          --n-species %d --n-params 6 --save runs/warmstart.pt
+          --n-params %d --save runs/warmstart.pt
    python <M>/train.py --data toy2d_train.h5 --out runs/warm \\
           --init-from runs/warmstart.pt --freeze-trunk
 
 Everything above is also a button in the GUI.  Working in: 2D.
 """ % (a.n_geom, a.n_geom * a.n_sets, a.n_times, a.n_species, nx, ny, mb,
-       a.n_predict, nx, ny, a.n_species)
+       a.n_predict, nx, ny, 2 if a.params == "pe_da" else 6)
     with open(os.path.join(out, "README.txt"), "w") as f:
         f.write(readme)
 

@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHAT CHANGED HERE, IN ONE LINE
-#     Two new flags, --velocity-informed and --geom-features, plus a guard that
-#     refuses to run switch A and the flow pipeline at the same time.
-#
-#   WHERE IT CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     Their concentration model takes the velocity on the BRANCH and leaves the
-#     trunk alone. Their own control is what makes this worth copying: the same
-#     velocity fed to the trunk pointwise recovered almost none of the gain
-#     (0.0297 against a 0.0304 baseline), so it is not the information that
-#     helps, it is the information arriving as a FIELD a convolution can read.
-#
-#   THE TWO ROUTES, AND WHICH TO RUN FIRST
-#     --velocity-informed simulated uses the flow your solver already stored.
-#     It needs no velocity operator at all and costs one training run. That is
-#     the ceiling a predicted field is chasing, so run it FIRST. If the true
-#     flow field does not help, a network trained to approximate it will not
-#     help either, and you will have saved yourself the second stage.
-#     --velocity-informed predicted is the full two stage pipeline and needs
-#     train_velocity.py and predict_velocity.py --write-back to have run.
-#
-#   WHY A AND D CANNOT BE COMBINED
-#     Switch A REPLACES the trunk's geodesic distance with a flow coordinate
-#     and puts the velocity in the branch. This leaves the trunk exactly as
-#     it was and adds the velocity to the branch. Asking for both is asking for
-#     two different branch layouts at once, and whichever won would be a coin
-#     toss the log did not record. So this file raises instead of choosing.
-#
-#   WHAT DID NOT CHANGE
-#     Every flag that existed before behaves as it did. With the two new flags
-#     left at their defaults this is the v1.1 training script.
-# =============================================================================
 """
 train.py — train the 3D PRT-DeepONet on dataset_reader.h5.
 
@@ -41,6 +6,11 @@ train.py — train the 3D PRT-DeepONet on dataset_reader.h5.
     python train.py --data ... --out ./runs/edt  --distance edt      # ablation
     python train.py --data ... --out ./runs/none --distance none     # ablation
     python train.py --data ... --out ./runs/vel  --with-velocity     # pipeline 2
+    python train.py --data ... --out ./runs/A    --species A         # pick the field
+
+The model has ONE output field, as in the 2D release, so a dataset holding
+several chemical species needs one training run per species. --species picks
+it; without the flag the first species in the file is used and the run says so.
 
 The three `--distance` runs are the ablation that carries the paper: they show
 that the GEODESIC field, not just any distance field, is what buys the accuracy.
@@ -61,18 +31,19 @@ from dataset_reader import (PRT3DDataset, split_by_geometry,        # noqa: E402
 from deeponet_model import PRT_DeepONet3D, count_parameters              # noqa: E402
 
 
-def evaluate(model, loader, device, n_species):
+def evaluate(model, loader, device):
+    """Held-out RMSE of the single predicted field, in normalised units."""
     model.eval()
-    se = torch.zeros(n_species, device=device)
+    se = torch.zeros((), device=device)
     n = 0
     with torch.no_grad():
         for b1, b2, tk, y in loader:
             b1, b2, tk, y = (t.to(device, non_blocking=True) for t in (b1, b2, tk, y))
             with torch.autocast("cuda", enabled=(device.type == "cuda")):
                 p = model(b1, b2, tk)
-            se += ((p.float() - y.float()) ** 2).sum(dim=(0, 1))
+            se += ((p.float() - y.float()) ** 2).sum()
             n += y.shape[0] * y.shape[1]
-    return torch.sqrt(se / max(n, 1)).cpu().numpy()
+    return float(torch.sqrt(se / max(n, 1)).cpu())
 
 
 def main():
@@ -80,19 +51,18 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", default="./runs/default")
     ap.add_argument("--distance", choices=["gdf", "edt", "none"], default="gdf")
+    ap.add_argument("--species", default=None, metavar="NAME",
+                    help="which chemical species this model predicts. The model "
+                         "has ONE output field, as in the 2D release, so one "
+                         "model is trained per species. Defaults to the first "
+                         "species in the dataset.")
     ap.add_argument("--with-velocity", action="store_true")
 
     # ---------------------------------------------------------------- switches
-    # A, B and C are the feature switches. --velocity-informed is not one of
-    # them: it is the flow pipeline, which needs three earlier stages to have
-    # run against the same dataset, and the window gives it a page of its own
-    # rather than a box beside these. It lives in this group because it is a
-    # flag on this script like the rest, not because it works like them.
-    #
-    # All default OFF. With all of them off this script behaves exactly as it
-    # did before they existed; tools/test_three_switches.py proves it bit-exactly.
+    # All three default OFF.  With all three off this script behaves exactly as
+    # it did before they existed; tools/test_three_switches.py proves it bit-exactly.
     sw = ap.add_argument_group(
-        "feature switches and the flow pipeline (all default OFF)")
+        "feature switches (all default OFF -> original behaviour)")
     sw.add_argument("--flow-proxy", action="store_true",
                     help="SWITCH A. Use the FLOW FIELD instead of the geometry. "
                          "The trunk's geodesic column becomes the advective "
@@ -134,8 +104,7 @@ def main():
 
     sw.add_argument("--velocity-informed", choices=["off", "simulated", "predicted"],
                     default="off",
-                    help="THE FLOW PIPELINE. Give the CONCENTRATION branch the velocity "
-                         "field as "
+                    help="SWITCH D. Give the CONCENTRATION branch the velocity field as "
                          "extra image channels, z scored, leaving the trunk exactly as "
                          "it was. 'simulated' uses samples/velocity, what the solver "
                          "produced, which needs no velocity operator and measures the "
@@ -143,8 +112,7 @@ def main():
                          "samples/velocity_pred, which predict_velocity.py --write-back "
                          "puts there, and is the published two stage pipeline.")
     sw.add_argument("--geom-features", action="store_true",
-                    help="with --velocity-informed, also give the branch the MIS and "
-                         "UPRM maps. "
+                    help="with switch D, also give the branch the MIS and UPRM maps. "
                          "Needs geom/mis and geom/uprm; add_flow_features.py writes "
                          "them into an existing dataset without recollecting it.")
     sw.add_argument("--dim-free", action="store_true",
@@ -162,9 +130,6 @@ def main():
     ap.add_argument("--patience", type=int, default=20)
     ap.add_argument("--test-frac", type=float, default=0.15)
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--inject-every", type=int, default=3,
-                    help="re-inject the geometry feature every N trunk layers; "
-                         "0 reproduces the plain 2D trunk")
     ap.add_argument("--with-time", dest="with_time", action="store_true", default=None,
                     help="force t into the trunk. By default it is decided by the "
                          "file: present for a transient dataset, dropped for a "
@@ -178,14 +143,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Switch A REPLACES the trunk's geometry feature with a flow coordinate and puts
-    # the velocity in the branch. --velocity-informed leaves the trunk alone and puts it
+    # the velocity in the branch. Switch D leaves the trunk alone and puts the velocity
     # in the branch. Asking for both is asking for two different branch layouts at
     # once, and whichever won would be a coin toss the log did not record.
     if args.velocity_informed != "off" and (args.flow_proxy or args.dim_free):
         raise SystemExit(
             "--velocity-informed cannot be combined with --flow-proxy or --dim-free.\n"
             "Switch A replaces the trunk's geodesic distance with a flow coordinate;\n"
-            "--velocity-informed keeps the trunk unchanged and adds to the branch.\n"
+            "switch D keeps the trunk unchanged and adds the velocity to the branch.\n"
             "They are two different answers to the same question, so run them "
             "separately and compare.")
     if args.geom_features and args.velocity_informed == "off":
@@ -198,7 +163,8 @@ def main():
                   flow_mode=args.flow_mode, u_floor=args.u_floor,
                   keep_geometry_channel=args.keep_geometry_channel,
                   velocity_informed=args.velocity_informed,
-                  geom_features=args.geom_features)
+                  geom_features=args.geom_features,
+                  species=args.species)
     train_ds = PRT3DDataset(args.data, indices=tr_idx, **common)
     test_ds = PRT3DDataset(args.data, indices=te_idx, **common)
 
@@ -214,14 +180,13 @@ def main():
         bad = []
         if tuple(ds2d.shape) != tuple(train_ds.shape):
             bad.append("grid %s vs %s" % (tuple(ds2d.shape), tuple(train_ds.shape)))
-        if ds2d.C != train_ds.C:
-            bad.append("species %d vs %d" % (ds2d.C, train_ds.C))
-        elif list(ds2d.species) != list(train_ds.species):
-            # Matching COUNTS is not enough. Two four-species files whose
-            # channel order differs would be mixed with channel 1 meaning "P"
-            # in one source and "A" in the other, and nothing would complain.
-            bad.append("species names/order %s vs %s"
-                       % (list(ds2d.species), list(train_ds.species)))
+        if ds2d.target_species != train_ds.target_species:
+            # The two sources must be teaching the SAME chemical. Mixing a file
+            # whose selected field is "P" into one whose selected field is "A"
+            # trains one output on two different quantities and nothing
+            # complains.
+            bad.append("species %r vs %r"
+                       % (ds2d.target_species, train_ds.target_species))
         if ds2d.trunk_dim != train_ds.trunk_dim:
             bad.append("trunk %d vs %d" % (ds2d.trunk_dim, train_ds.trunk_dim))
         if ds2d.in_channels != train_ds.in_channels:
@@ -250,14 +215,9 @@ def main():
     model = PRT_DeepONet3D(
         in_channels=train_ds.in_channels,
         n_params=len(train_ds.param_names),
-        n_species=train_ds.C,
         trunk_in_dim=train_ds.trunk_dim,
         grid=train_ds.shape,
-        inject_every=(args.inject_every if train_ds.cfg["film"] else 0),
     ).to(device)
-    if not train_ds.cfg["film"] and args.inject_every:
-        print("note: this configuration has no geometry column in the trunk, so "
-              "FiLM re-injection is switched off")
 
     # ------------------------------------ SWITCH B, two-stage: warm start on 2D
     if args.freeze_trunk and not args.init_from:
@@ -280,11 +240,15 @@ def main():
                   "geometry branch is retrained." % (n_frozen / 1e6))
 
     print("device      : %s" % device)
-    print("species     : %s" % train_ds.species)
+    print("species     : predicting %r  (this file holds %s)"
+          % (train_ds.target_species, ", ".join(train_ds.species)))
     print("switches    : %s" % train_ds.cfg["label"])
     print("branch1 ch  : %d  (%s)   params: %.2fM"
           % (train_ds.in_channels, ", ".join(train_ds.branch_ch),
              count_parameters(model) / 1e6))
+    print("parameters  : %s   (layout %s%s)"
+          % (", ".join(train_ds.param_names), train_ds.param_layout,
+             ", da = " + train_ds.da_column if train_ds.da_column else ""))
     print("trunk inputs: %s   (snapshots per run: %d)"
           % (", ".join(train_ds.trunk_cols), train_ds.T))
     print("train/test  : %d / %d samples over disjoint geometries"
@@ -325,8 +289,12 @@ def main():
         if te < best - 1e-6:
             best, bad = te, 0
             torch.save({"model": model.state_dict(), "args": vars(args),
-                        "species": train_ds.species,
+                        "species": train_ds.target_species,
                         "param_names": train_ds.param_names,
+                        # which layout the dataset used, so predict.py can put
+                        # the numbers you type into the right columns
+                        "param_layout": train_ds.param_layout,
+                        "da_column": train_ds.da_column,
                         # What the parameter branch actually SAW. Without this,
                         # predict.py has to fall back on hardcoded defaults for
                         # the parameters it does not expose, and those defaults
@@ -363,17 +331,15 @@ def main():
                 print("early stop at epoch %d" % ep); break
 
     model.load_state_dict(torch.load(os.path.join(args.out, "best.pt"))["model"])
-    rmse = evaluate(model, test_loader, device, train_ds.C)
-    summary = dict(best_test_loss=best,
-                   rmse_per_species={s: float(r) for s, r in zip(train_ds.species, rmse)},
-                   rmse_mean=float(rmse.mean()), history=hist, args=vars(args))
+    rmse = evaluate(model, test_loader, device)
+    summary = dict(best_test_loss=best, species=train_ds.target_species,
+                   rmse=rmse, rmse_mean=rmse, history=hist, args=vars(args))
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     print("\nheld-out RMSE (normalised units):")
-    for s, r in zip(train_ds.species, rmse):
-        print("  %-6s %.4f" % (s, r))
-    print("  %-6s %.4f    <- the 2D paper's bar was 0.04" % ("mean", rmse.mean()))
+    print("  %-6s %.4f    <- the 2D paper's bar was 0.04"
+          % (train_ds.target_species, rmse))
 
 
 if __name__ == "__main__":

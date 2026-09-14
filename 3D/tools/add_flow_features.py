@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     Nothing. This file has no counterpart in their release.
-#     Their pipeline reads MIS from a pre-built cache (mis_map.npz) and UPRM
-#     from split.pt, both produced by code that was not published.
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#
-#   WHY IT EXISTS
-#     Our datasets are one HDF5 file per campaign, so the maps belong INSIDE
-#     that file rather than in a cache beside it. The collectors write them
-#     for new campaigns; this adds them to a file you already have, in place.
-#     Recollecting a real campaign means reading a few hundred thousand VTI
-#     files again for two arrays that depend only on the geometry.
-#
-#   ONE DESIGN DECISION WORTH KNOWING
-#     The z-scoring constants are stored as ATTRIBUTES beside the arrays
-#     rather than applied to them. The maps stay in voxels, so they can be
-#     read and looked at and compared with a picture of the rock, and the
-#     reader applies the scaling. Applying it here would leave a file whose
-#     MIS map is in units that only make sense next to the file it came from.
-# =============================================================================
 """Add the flow descriptors to a dataset that was collected without them.
 
 The collectors write MIS and UPRM for new campaigns. This adds them to a file that
@@ -78,10 +55,6 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
         if "geom/material" not in h:
             raise SystemExit("%s has no geom/material, so there is no geometry to "
                              "compute anything from." % path)
-        # Refusing to overwrite is not tidiness. The scaling constants written
-        # beside these arrays are what the reader subtracts, so silently
-        # recomputing them with a different buffer would leave every checkpoint
-        # trained on this file scaled against numbers that no longer exist.
         present = [k for k in ("mis", "uprm", "dw2") if k in h["geom"]]
         if present and not force and not dry_run:
             raise SystemExit(
@@ -90,15 +63,9 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                 % ", geom/".join(present))
 
         mat = np.asarray(h["geom/material"])
-        # READ, never guessed. CompLaB and this project number their materials
-        # differently, and a wrong pore code inverts the rock silently.
         pore_code = int(h.attrs["pore_code"]) if "pore_code" in h.attrs else None
         dim = int(h.attrs.get("dimension", 3 if mat.shape[-1] > 1 else 2))
         G = len(mat)
-        # A 2D campaign is stored as a 3D array one voxel deep, so that one
-        # reader serves both. The descriptors are computed on the real 2D image
-        # and put back into that flat axis, rather than on a 64 x 148 x 1 volume
-        # where every voxel touches a wall in z and every MIS radius is 0.5.
         squeeze = (dim == 2 and mat.ndim == 4 and mat.shape[-1] == 1)
         if verbose:
             print("%s" % path)
@@ -111,9 +78,6 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
             return None
 
         out_shape = mat.shape
-        # float32 throughout. These are radii in voxels, so the largest value in
-        # a 64-cube is about 32: nothing here needs double precision, and the
-        # arrays are the biggest thing this script writes.
         mis = np.zeros(out_shape, np.float32)
         uprm = np.zeros(out_shape, np.float32)
         e2 = np.zeros(out_shape, np.float32)
@@ -133,8 +97,6 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                 mis[i] = f["mis"]
                 uprm[i] = f["uprm"]
                 e2[i] = e * e
-            # Every 25 rocks, and always the last. A 3000-rock campaign is 40
-            # minutes of silence otherwise, which reads as a hang.
             if verbose and ((i + 1) % 25 == 0 or i == G - 1):
                 print("  %d/%d  %.0fs" % (i + 1, G, time.time() - t0), flush=True)
 
@@ -143,14 +105,11 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
         # and a held-out rock of the same width look different.
         mis_mu, mis_sd = ff.zscore_stats([mis[i] for i in range(G)])
         up_mu, up_sd = ff.zscore_stats([uprm[i] for i in range(G)])
-        # dw2 is scaled by its absolute range, not z scored, because zero has to
-        # keep meaning "on the wall". Over PORE voxels only: including the solid
-        # would put a huge spike at zero into the range and squash the rest.
         allp = np.concatenate([e2[i][..., 0][pores[i]] if squeeze else e2[i][pores[i]]
                                for i in range(G)])
         lo, hi = float(allp.min()), float(allp.max())
         if hi <= lo:
-            hi = lo + 1.0                    # a one-voxel-wide rock: avoid 0/0
+            hi = lo + 1.0
         dw2 = np.zeros_like(e2)
         for i in range(G):
             p = pores[i]
@@ -169,17 +128,11 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                 ("uprm", uprm, {"uprm_mu": up_mu, "uprm_sd": up_sd}),
                 ("dw2", dw2, {"dw2_min": lo, "dw2_max": hi})):
             if name in g:
-                del g[name]     # --force only; the guard above refuses otherwise
-            # One chunk per rock. Training reads one rock at a time and never a
-            # slice across rocks, so this is the access pattern; chunking the
-            # other way makes every read pull the whole array through gzip.
+                del g[name]
             d = g.create_dataset(name, data=arr, compression="gzip",
                                  chunks=(1,) + arr.shape[1:])
             for k, v in attrs.items():
                 d.attrs[k] = float(v)
-            # The buffer rides along with the data. Six months from now the only
-            # way to know whether these maps measured the rock or the padding is
-            # if the file says so itself.
             d.attrs["buffer"] = int(buffer)
         g["mis"].attrs["how_to_read_this"] = (
             b"MIS, the maximum inscribed sphere radius, in VOXELS. The radius of the "

@@ -1,7 +1,28 @@
-numpy
-scipy
-h5py
-matplotlib
-scikit-image
-scikit-fmm
-torch
+# PRT-DeepONet-3D
+#
+#   pip install -r requirements.txt
+#
+# or, if you would rather have the CPU build of torch chosen for you and a
+# report of what is already present:
+#
+#   python gui/install_requirements.py
+#
+# Versions are floors, not pins: these are the oldest releases the code has
+# been run against, and nothing here uses an API that later versions removed.
+
+numpy>=1.24
+scipy>=1.10
+h5py>=3.8
+matplotlib>=3.7
+torch>=2.0
+
+# ----------------------------------------------------------------- optional
+# scikit-image  the marching cubes used by the 3D surface renders.  Without it
+#               the 2D slice figures still work.
+# scikit-fmm    a smoother geodesic field for predict.py.  Without it, pass a
+#               geometry that already carries one.
+# tkinter       the window.  It ships with most CPython builds and is not on
+#               PyPI; on Debian and Ubuntu it is the python3-tk package.
+#               Nothing outside gui/ needs it.
+scikit-image>=0.20
+scikit-fmm>=2022.8

@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/models/PRT-DeepONet_Velocity_load.ipynb, code cells 4 and 5
-#     flow/models/PRT-DeepONet_Velocity.ipynb, code cells 2 and 3
-#     concentration/models/PRT-DeepONet_Monod.ipynb, code cell 3
-#
-#   WHAT THEIR 2D CODE DOES
-#     Three networks. A U-Net from the pore mask to the pressure gradient; a
-#     DeepONet from (mask, UPRM, MIS), the Reynolds number and a five-input
-#     trunk to (ux, uy); and the concentration DeepONet with the velocity
-#     added to its branch.
-#
-#   WHAT WE CHANGED, AND WHY
-#     1. THE 2D CLASSES ARE UNCHANGED, DELIBERATELY. Channel ladders, block
-#        counts, layer widths, SiLU placement and the latent split are theirs
-#        exactly. That is what lets Velocity.pt, Pressure_component_UNet.pt
-#        and Monod.pt load with no missing key, which is what makes any
-#        comparison with their published numbers a comparison with THEIR
-#        method rather than with our reimplementation. Do not tidy them.
-#     2. WE ADDED 3D FORMS. Conv2d becomes Conv3d, two output components
-#        become three, and the trunk grows from five inputs to seven: three
-#        coordinates, three pressure gradient components, one wall distance.
-#     3. THE 3D LATENT IS 192 WIDE, NOT 128. The latent is cut into one block
-#        per output component. 128 / 2 = 64 in 2D; 128 / 3 is not an integer,
-#        so 192 keeps 64 per component instead of silently narrowing each one.
-#     4. THE GRID IS A PARAMETER. Theirs is fixed at 64 x 148. The branch
-#        flattens after five halvings, so a smaller grid would hit an axis of
-#        size zero inside AvgPool; max_pool_blocks() reduces the block count
-#        and says so, instead of crashing with a message that names no axis.
-#     5. THE 3D PRESSURE U-NET IS NARROWER THAN THEIRS. Six levels of 64
-#        channels does not fit in three dimensions at any useful batch size.
-#        Those defaults are ours, and are marked as ours in the class.
-# =============================================================================
 """The velocity operator, and the pressure U-Net that feeds it.
 
 Two networks, and the 2D forms of both are exact ports so that the weights released
@@ -148,7 +112,7 @@ class ConvBlock(nn.Module):
         Norm = nn.BatchNorm2d if dim == 2 else nn.BatchNorm3d
         self.conv = Conv(cin, cout, 3, padding=1)
         self.drop = Drop(p)
-        self.bn = Norm(cout)             # AFTER dropout, which is unusual; theirs
+        self.bn = Norm(cout)
 
     def forward(self, x):
         return self.bn(self.drop(F.relu(self.conv(x))))
@@ -247,9 +211,6 @@ class CustomCNN(nn.Module):
 
     def __init__(self, in_channels, out_dim=128, num_blocks=5, grid=(REF_NX, REF_NY), dim=2):
         super().__init__()
-        # The channel ladder is theirs, verbatim. At five blocks on 64 x 148 the
-        # flatten width comes to 256 * 2 * 4 = 2048, which is the number printed
-        # in their paper: the arithmetic is the check that this is their network.
         ladder = [in_channels, 16, 32, 64, 128, 256, 512][:num_blocks + 1]
         Conv = nn.Conv2d if dim == 2 else nn.Conv3d
         Pool = nn.AvgPool2d if dim == 2 else nn.AvgPool3d
@@ -268,10 +229,6 @@ class CustomCNN(nn.Module):
                    max_pool_blocks(grid), 2 ** num_blocks))
         self.blocks = num_blocks
         self.pooled = tuple(sizes)
-        # The flatten width is tied to the GRID, so a checkpoint trained at one
-        # grid will not load at another. That is not a limitation to work around;
-        # it is why every checkpoint here records the grid it was trained on and
-        # refuses a dataset of a different size rather than reshaping silently.
         self.flat = ladder[num_blocks] * math.prod(sizes)
         self.fc = nn.Linear(self.flat, out_dim)
 
@@ -322,28 +279,18 @@ class _VelocityBase(nn.Module):
                 "otherwise the latent cannot be split evenly. Try %d."
                 % (out_dim, n_out, n_out * (out_dim // n_out)))
         self.branch1 = CustomCNN(b1_ch, out_dim, num_blocks=blocks, grid=grid, dim=dim)
-        self.branch2 = ScalarMLP(1, out_dim, 128, 3)     # one flow number in
+        self.branch2 = ScalarMLP(1, out_dim, 128, 3)
         self.trunk = make_trunk(trunk_in, out_dim, 8, 128)
-        # One bias per component, learned. A DeepONet's product-then-sum has no
-        # constant term of its own, and a velocity field has a mean.
         self.bias = nn.Parameter(torch.zeros(n_out))
         self.grid = tuple(grid)
         self.n_out = n_out
         self.half = out_dim // n_out
 
     def forward(self, b1, b2, tr):
-        # (N, Lp, D) -> flatten the point axis so the trunk sees one long batch
-        # of coordinates, then fold it back. Lp is every voxel of the grid here,
-        # not a sample of them, which is why the trunk stays narrow.
         N, Lp, D = tr.shape
         t = self.trunk(tr.reshape(-1, D)).view(N, Lp, -1)
-        b1o = self.branch1(b1).unsqueeze(1)      # (N, 1, out_dim)
-        b2o = self.branch2(b2).unsqueeze(1)      # (N, 1, out_dim)
-        # THE VECTOR TRICK. A DeepONet's product-then-sum gives ONE number. To
-        # get a vector out, cut the latent into n_out equal blocks and sum
-        # within each block: 128 wide becomes two 64-wide dot products. Not a
-        # head per component; the branch and trunk are shared and only the
-        # reduction differs. This is theirs, unchanged.
+        b1o = self.branch1(b1).unsqueeze(1)
+        b2o = self.branch2(b2).unsqueeze(1)
         prod = (b1o * b2o * t).view(N, Lp, self.n_out, self.half).sum(-1)
         return (prod + self.bias).view((N,) + self.grid + (self.n_out,))
 
@@ -433,10 +380,6 @@ class ROIHuberLoss(nn.Module):
         self.delta = delta
 
     def forward(self, pred, target, roi):
-        # The mask is the pore space. Note the denominator below: pore voxels
-        # times components, NOT the whole grid. Dividing by the grid would make
-        # a low-porosity rock look easy, because most of its voxels are solid
-        # and predicted zero by construction.
         mask = (roi > 0.5).unsqueeze(-1)
         diff = (pred - target) * mask
         absd = torch.abs(diff)
@@ -459,10 +402,6 @@ def divergence_penalty(pred, interior, ratios):
     """
     ndim = pred.dim() - 2
     div = torch.zeros_like(pred[..., 0])
-    # Each component was z-scored SEPARATELY before training, so a raw sum of
-    # their derivatives is not a divergence: every term carries its own scale.
-    # ratios puts them back on a common footing. In 2D that is one number,
-    # SD_v / SD_u, which is exactly what their RV does.
     for ax in range(ndim):
         comp = pred[..., ax]
         sl_c = [slice(None)] + [slice(1, -1)] * ndim
@@ -474,9 +413,6 @@ def divergence_penalty(pred, interior, ratios):
         d[tuple(sl_c)] = (comp[tuple(sl_p)] - comp[tuple(sl_m)]) * 0.5
         div = div + float(ratios[ax]) * d
     m = interior.float()
-    # clamp, not an if. A rock so tight that no voxel has pore neighbours on
-    # every axis has no interior at all, and a zero divergence term is the right
-    # answer for it; a division by zero would poison the whole batch's gradient.
     return (div.pow(2) * m).sum() / m.sum().clamp(min=1.0)
 
 
@@ -486,9 +422,6 @@ def interior_pore_mask(pore):
     p = pore if is_torch else torch.as_tensor(pore)
     p = p.bool()
     ndim = p.dim()
-    # The border is excluded by construction: `core` never touches index 0 or -1,
-    # so a voxel on the inlet face is never interior. A central difference there
-    # would reach outside the domain.
     inner = torch.zeros_like(p)
     core = tuple(slice(1, -1) for _ in range(ndim))
     acc = p[core].clone()
@@ -505,19 +438,10 @@ def interior_pore_mask(pore):
 def build_velocity_model(grid, b1_ch=3, out_dim=None):
     """The right velocity operator for a grid, 2D or 3D, with its trunk width."""
     grid = tuple(int(g) for g in grid)
-    # A 2D campaign is stored one voxel deep so that one reader serves both.
-    # Building a 3D network for it would ask a 3x3x3 kernel to see a domain that
-    # is one voxel thick in z, so the flat axis is dropped here instead.
     if len(grid) == 3 and grid[2] == 1:
         grid = grid[:2]
     if len(grid) == 2:
-        # 128 wide, cut into two blocks of 64. Theirs, and the released weights
-        # load into it. Trunk: x, y, dPx, dPy, dw2 = 5.
         return VelocityDeepONet(b1_ch=b1_ch, out_dim=out_dim or 128, n_out=2, grid=grid), 5
-    # 192, not 128, and that is a real choice rather than a round number. Three
-    # components do not divide 128, and the nearest legal value below it, 126,
-    # would narrow each component to 42. 192 keeps 64 per component, which is
-    # what the 2D model gives each of its two. Trunk gains z and dPz = 7.
     return VelocityDeepONet3D(b1_ch=b1_ch, out_dim=out_dim or 192, n_out=3, grid=grid), 7
 
 

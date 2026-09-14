@@ -1,107 +1,24 @@
 # GeometryAware3D - the PRT-DeepONet-3D side
 
-**Shahram Asgari and Christof Meile, Meile Lab, Department of Marine Sciences,
-University of Georgia.** Everything in this folder is ours, apart from the two
-dimensional velocity classes and flow descriptors noted in `../LICENSING.md`.
-
 Everything that is not CompLaB. CompLaB itself is a separate C++ project; what
 lives here builds its input, reads its output, and trains on the result.
 
-## Every file in here, and what it is for
-
-Lines are given so you can tell a one-page utility from a solver. **NEW** and
-**CHANGED** mark what the flow work added or touched.
-
 ```
-3D/
-├── README.md                              this file
-├── SWITCHES.md                            the switches and the flow pipeline, in full
-│
-├── tools/    geometry, simulation, datasets
-│   │
-│   │  ---- the two Python simulators ----------------------------------------
-│   ├── prtlb_2d.py                 2566   flow, transport and reactions in 2D
-│   ├── prtlb_3d.py                 2535   the same in 3D. The transport and reaction
-│   │                                      code is word for word identical to the 2D
-│   │                                      file, and test_flow_solvers.py checks it
-│   ├── settings_and_units.py       2974   every physical number in one place, with
-│   │                                      its units and its provenance
-│   │
-│   │  ---- making pore structures -------------------------------------------
-│   ├── build_geometry_3d.py         608   Gaussian random media at a chosen porosity
-│   ├── build_toy_pack_2d.py         279   a small 2D packing, for tests and demos
-│   │
-│   │  ---- building datasets ------------------------------------------------
-│   ├── build_dataset_2d.py          973   runs the 2D simulator over a sweep of
-│   │                                      conditions and writes one dataset.h5
-│   ├── build_dataset_3d.py          934   the same in 3D
-│   ├── build_practice_dataset.py    203   a small but REAL dataset in five seconds
-│   ├── make_demo_complab.py         739   writes a demo campaign in the exact layout
-│   │                                      finished CompLaB output has. The numbers are
-│   │                                      constructed and it says so
-│   │
-│   │  ---- the CompLaB interface --------------------------------------------
-│   ├── complab_campaign.py          585   writes the input files a cluster run needs,
-│   │                                      in batches, and tracks and retries them
-│   ├── collect_complab_output.py    718   a campaign this project set up -> dataset.h5  CHANGED
-│   ├── collect_foreign_complab.py  1686   runs somebody else set up, by hand, with or
-│   │                                      without their input files beside them        CHANGED
-│   ├── import_2d_simulations.py     396   2D simulation output somebody sent you
-│   │
-│   │  ---- 2D into 3D, for switch B -----------------------------------------
-│   ├── build_transfer_set_2d_to_3d.py 458  extrudes 2D domains into 3D blocks
-│   ├── load_pretrained_2d_weights.py  207  converts the published 2D weights into ours
-│   │
-│   │  ---- what the model reads ---------------------------------------------
-│   ├── dataset_reader.py            597   the PyTorch Dataset. THE HINGE OF THE
-│   │                                      PROJECT: the one file that knows both what
-│   │                                      an .h5 holds and what the model wants, so
-│   │                                      every switch passes through it            CHANGED
-│   ├── flow_coordinates.py          437   travel time and stream coordinates, switch A
-│   │
-│   │  ---- the flow descriptors ---------------------------------------------
-│   ├── flow_features.py             573   MIS, UPRM and the squared wall distance,
-│   │                                      in two and three dimensions                   NEW
-│   ├── harmonic_pressure.py         337   the sparse Laplace solve that gives the
-│   │                                      velocity operator's trunk its prior           NEW
-│   ├── add_flow_features.py         231   puts all three into a dataset you already
-│   │                                      have, without recollecting it                 NEW
-│   │
-│   │  ---- the tests --------------------------------------------------------
-│   ├── test_flow_solvers.py         402   the 2D and 3D solvers against each other
-│   ├── test_three_switches.py       263   proves switches-off is bit-identical to the
-│   │                                      original, by re-implementing it inside itself
-│   └── test_documented_numbers.py   418   every number quoted in the docs, against
-│                                          the code that is supposed to produce it
-│
-└── model/    the neural operator
-    │
-    │  ---- concentration ----------------------------------------------------
-    ├── deeponet_model.py            200   the architecture: CNN branch, dense branch,
-    │                                      trunk, FiLM
-    ├── train.py                     372   the training loop, and every feature flag     CHANGED
-    ├── evaluate.py                  535   scores a checkpoint on structures it never saw
-    ├── predict.py                   485   answers about one new structure, in under a
-    │                                      second, with no simulation
-    ├── run_ablation_sweep.py        204   trains every switch configuration and
-    │                                      compares them on the SAME held-out rocks
-    ├── make_figures.py              273   the figures, from a finished run
-    ├── train.sbatch                       Slurm submit. Set your own partition
-    │
-    │  ---- velocity --------------------------------------------------------
-    ├── velocity_model.py            665   the velocity operator, the pressure U-Net,
-    │                                      the ROI Huber loss and the divergence
-    │                                      penalty, in 2D and 3D                         NEW
-    ├── train_velocity.py            538   trains the operator                           NEW
-    ├── predict_velocity.py          412   runs it and writes samples/velocity_pred
-    │                                      beside samples/velocity, never over it        NEW
-    │
-    │  ---- the tests -------------------------------------------------------
-    ├── test_flow_pipeline.py        394   the whole velocity path end to end, on a
-    │                                      dataset it builds for itself. 33 checks       NEW
-    └── test_reference_parity.py     244   our descriptors and our predicted field
-                                           against THEIRS, on their own bundled
-                                           domain, value by value                        NEW
+tools/            generate geometries, build and collect a CompLaB campaign,
+                  the two Python simulators, the flow descriptors, the demo
+                  generator, the tests
+model/            the 3D PRT-DeepONet: architecture, training, inference, evaluation
+                    deeponet_model.py      the network
+                    velocity_model.py      the velocity operator and the pressure U-Net
+                    train_velocity.py      trains it
+                    predict_velocity.py    runs it, with no flow solve
+                    train.py               training loop
+                    train.sbatch           Slurm submit (set your lab partition)
+                    predict.py             run on a NEW geometry, no simulation
+                    evaluate.py            held-out accuracy and the paper's figures
+                    make_figures.py        the 2D and 3D flow / biotic / abiotic rendering
+                    run_ablation_sweep.py  one model per switch configuration
+SWITCHES.md       the full write-up of the three switches
 ```
 
 Nothing generated is kept here. Geometries, datasets, checkpoints and figures
@@ -110,19 +27,13 @@ are all written under `work/` at the project root.
 A per-file guide to both folders is in `docs/`: `GUIDE_3D_tools.docx` and
 `GUIDE_3D_model.docx`.
 
-**Every file marked NEW or CHANGED says so at the top of itself**, in a block headed
-`CHANGED FROM THE 2D VERSION`: where the code came from, what their version does, and
-what was changed and why.
-
 ---
 
 
-## The three feature switches, and the flow pipeline  (all default OFF)
+## The four feature switches  (all default OFF)
 
-A, B and C were added after the July meeting; the flow pipeline after the velocity
-informed follow-up. It is listed here because it is a flag on the same script, not
-because it works like the other three.
-With all of them off the code behaves exactly as it did before; `tools/test_three_switches.py` proves it bit-exactly.  Full documentation
+Added after the July meeting; switch D after the velocity informed follow-up.
+With all four off the code behaves exactly as it did before; `tools/test_three_switches.py` proves it bit-exactly.  Full documentation
 in **SWITCHES.md**.
 
 | switch | flag | what it does |
@@ -130,20 +41,10 @@ in **SWITCHES.md**.
 | A | `--flow-proxy` | use the FLOW FIELD instead of the geodesic distance. Trunk gets the advective travel time `tau`, branch gets the normalised velocity. This is Christof's "can we just take the flow field instead of the GDF?" |
 | B | `--transfer-2d H5` | mix extruded 2D domains into training. An extruded 2D domain is an EXACT 3D problem, so this is free training data, not an approximation. Build the file with `tools/build_transfer_set_2d_to_3d.py`. |
 | C | `--dim-free` | A and B together: the flow-space trunk `(t, dwall, tau)`, which has the SAME number of inputs in 2D and 3D and therefore transfers with no modification. |
-| the flow pipeline | `--velocity-informed` | give the CONCENTRATION branch the velocity field as extra image channels and leave the trunk alone. `simulated` uses the field the solver produced, `predicted` uses one from the velocity operator. This is the published follow-up, and it is NOT switch A. |
-
-**The flow pipeline is reached differently from the other three.** A, B and C are tick boxes on
-the Train page. D is a panel: **The flow field -> The flow pipeline**, in the sidebar,
-in both modes. Six shared boxes down the left so every step reads the same dataset, five
-cards down the right, each with its own state, its own command line and its own Run
-button, and one button that runs them in order and stops at the first failure. The flag
-on `train.py` is unchanged; only the way in has moved. The reason is that A, B and C
-each change one training run and need nothing prepared, while D needs three earlier
-stages to have run against the same dataset first.
+| D | `--velocity-informed` | give the CONCENTRATION branch the velocity field as extra image channels and leave the trunk alone. `simulated` uses the field the solver produced, `predicted` uses one from the velocity operator. This is the published follow-up, and it is NOT switch A. |
 
 ```
-python tools/build_practice_dataset.py --out /tmp/test3d.h5     # a small but real dataset
-python tools/test_three_switches.py --data /tmp/test3d.h5   # 29 checks
+python tools/test_three_switches.py     # 29 checks; builds its own small dataset
 python model/run_ablation_sweep.py --data 3d.h5 --data-2d train2d.h5 --out sweep
 ```
 
@@ -309,8 +210,11 @@ space. `retry` deliberately skips them.
 
 ### Parameter space
 
-Six dimensionless groups, Latin-hypercube sampled in log space
-(`--sampling grid` gives a full grid for the Pe–Da heatmap figure):
+The campaign varies six dimensionless groups, Latin-hypercube sampled in log
+space (`--sampling grid` gives a full grid for the Pe–Da heatmap figure). What
+the dataset records is a separate choice: `--params pe_da`, the default, stores
+`Pe` and one `Da`, matching the paper's parameter branch, and `--params full`
+stores all six.
 
 | group | range | set through |
 |---|---|---|
@@ -330,6 +234,7 @@ does not touch the flow field.
 
 ```bash
 python model/train.py --data tools/dataset/dataset.h5 --out runs/gdf
+python model/train.py --data ... --out runs/A    --species A         # pick the field
 python model/train.py --data ... --out runs/edt  --distance edt      # ablation
 python model/train.py --data ... --out runs/none --distance none     # ablation
 python model/train.py --data ... --out runs/vel  --with-velocity     # flow-conditioned
@@ -364,7 +269,8 @@ python model/predict.py --checkpoint runs/gdf/best.pt \
 `time_series.npz`. Both are ignored with a note on a steady checkpoint, which
 has no time input to sweep.
 
-`evaluate.py` writes `metrics.json` (per-species RMSE and R², speedup),
+`evaluate.py` writes `metrics.json` (RMSE and R² for the predicted field, and
+the speedup),
 `rmse_table.csv` (one row per held-out sample), `fields_*.png`
 (truth / prediction / absolute error slices), `physics_*_2d.png` and
 `physics_*_3d.png` (flow, biotic rate and abiotic rate, truth against
@@ -408,26 +314,26 @@ Measured on CPU with an untrained-quality checkpoint: 0.17 s geometry prep
 | 2D paper | here | same? |
 |---|---|---|
 | `B_C` geometry branch: 5 × Conv2D(3×3) + SiLU + AvgPool2D(2×2), channels 16/32/64/128/256, then flatten → Linear → SiLU, 128 nodes | 5 × Conv3D(3×3×3) + SiLU + AvgPool3D(2×2×2), same channel ladder, flatten → Linear, 128 | yes, one dimension up. 64³ through 5 halving blocks is 2×2×2×256 = 2048, exactly the 2D model's 2×4×256 flatten width |
-| `B_F` parameter branch: 3 × Linear, SiLU on 1–2, none on 3, in 2 or 3 → 128 | 3 × Linear, SiLU, none on the last, in **6** → 128 | yes, wider input |
-| `T` trunk: 8 × Linear, SiLU on 1–7, none on 8, in 3 or 4 → 128 | 8 × Linear, same activation pattern, in **4 or 5** → 128, plus FiLM re-injection of the geodesic column every 3rd layer | yes, plus one addition |
-| `s = G(w, r)(p)` — branch ⊙ branch, dotted with the trunk | `branch1(w) * branch2(r)` → per-species coefficients → `einsum` with the trunk | yes |
+| `B_F` parameter branch: 3 × Linear, SiLU on 1–2, none on 3, in 2 or 3 → 128 | 3 × Linear, same activation pattern, in 2 by default and as many as the dataset records → 128 | yes |
+| `T` trunk: 8 × Linear, SiLU on 1–7, none on 8, in 3 or 4 → 128 | 8 × Linear, same activation pattern, in **4 or 5** → 128 | yes, one coordinate more |
+| `s = G(w, r)(p)` — branch ⊙ branch, dotted with the trunk | `branch1(w) * branch2(r)` → `(basis * code).sum(-1) + bias` | yes |
 | `p_S(x, y, GDF)` steady / `p_T(x, y, GDF, t)` transient | `(x, y, z, gdf)` steady / `(x, y, z, t, gdf)` transient, chosen automatically from the dataset | yes |
-| `r_A(Pe, Da_A)`, `r_D(Pe, Da_A, Da_D)`, `r_M(Pe, Da_M)` — separate models per reaction system | ONE model, `r = (Pe, Da_bio, Da_abio, Ks_Ac/Ac0, Ks_A/A0, Y·Ac0/B0)` | deliberately different |
-| output: one field per snapshot, snapshots along t | `(B, P, n_species)` for 4 species at once, swept over t by `--t-series` | yes, multi-species |
+| `r_A(Pe, Da_A)`, `r_D(Pe, Da_A, Da_D)`, `r_M(Pe, Da_M)` — separate models per reaction system | the same: one model per reaction system, and one per chemical species | yes |
+| output: one field per snapshot, snapshots along t | one field, `(B, P)`, plus one scalar bias, swept over t by `--t-series` | yes |
 
-Two deliberate departures, both stated so a reviewer sees them coming.
+The architecture matches the 2D paper block for block. The only differences are
+the ones the third dimension forces, listed below. One model is trained per
+reaction system and per chemical species, exactly as in the 2D release, so a
+dataset holding four chemicals needs four training runs; `train.py --species`
+picks which one, and without the flag the first species in the file is used and
+the run says so.
 
-**One model instead of three.** The 2D paper trains a separate operator per
-reaction system: abiotic only, abiotic-plus-decay, Monod. Here biotic and
-abiotic run in the same simulation and the same network, conditioned on both
-`Da_bio` and `Da_abio` in one 6-vector. That is what "biotic and abiotic
-capability" means for this project, and it is why the parameter branch takes 6
-inputs rather than 2 or 3. The cost is that the model must learn a
-higher-dimensional parameter manifold from the same number of runs; the benefit
-is that coupled biotic–abiotic behaviour is representable at all, which three
-separate single-mechanism models cannot do.
-
-**FiLM re-injection in the trunk.** An addition, not a port. See below.
+The parameter branch is 2 inputs wide, which is the paper's `(Pe, Da)`, and that
+is what every builder in `tools/` records by default. Its width is still taken
+from the dataset rather than hard-coded: `train.py` builds it from
+`len(param_names)`, so a dataset written with `--params full`, the six-column
+biotic plus abiotic vector, trains with a six-input branch instead, with no
+change to the code.
 
 ### What changed from the 2D model, and why
 
@@ -436,24 +342,23 @@ separate single-mechanism models cannot do.
 exactly the flatten dimension of the 2D model's 2×4×256**. The encoder ports over
 verbatim.
 
-**The trunk takes 5 inputs and is subsampled.** Your 2D model evaluates the trunk
-at all 9 472 grid points. The same thing at 64³ is 262 144 points — a 26.8 GB
-activation tensor at batch 25. At 8 192 sampled pore voxels the trunk costs
-**944 MMACs, slightly less than your 2D model's 1 091**, and memory stays near
-0.3 GB. That is why the 3D model trains on a laptop. Whole model: 1.66 M
-parameters.
+**The trunk takes one coordinate more.** `(x, y, z, gdf)` for a steady dataset
+and `(x, y, z, t, gdf)` for a transient one, against the 2D `(x, y, GDF)` and
+`(x, y, GDF, t)`. Which of the two is built follows from the file: a steady
+dataset has a constant `t`, and feeding a constant is a dead input.
 
-**Multi-species output through one shared trunk.** The branch emits
-`n_species × p` coefficients against a single trunk. The trunk is the part
-exposed to the per-voxel cost, so duplicating it per species would multiply the
-dominant cost for no benefit.
+**The trunk is subsampled.** A memory necessity, not an architecture change.
+The 2D model evaluates the trunk at all 9 472 grid points. The same thing at
+64³ is 262 144 points, which is a 26.8 GB activation tensor at batch 25. At
+8 192 sampled pore voxels the trunk costs **944 MMACs, slightly less than the
+2D model's 1 091**, and memory stays near 0.3 GB. That is why the 3D model
+trains on a laptop. Whole model: 1.59 M parameters.
 
-**Geometry re-injection.** `Trunk(inject_every=3)` FiLM-modulates every third
-hidden layer with the geodesic column. Deep networks with a single early geometry
-input provably lose that information with depth — "Do Neural Operators Forget
-Geometry?" (2026) formalises it via a data-processing-inequality argument. Your
-2D trunk is shallow enough not to care; a 3D one is not. Set `--inject-every 0`
-to reproduce the plain 2D behaviour and ablate it.
+**The flow-aware capability is optional and off by default.** The
+velocity-informed path (switch D) hands the geometry branch the velocity field
+as extra image channels and leaves the trunk alone. It is a switch, not a
+change to the architecture above: with it off the model is the 2D one lifted
+one dimension, and nothing in the default path touches it. See `SWITCHES.md`.
 
 ### The dataset layer
 
@@ -463,7 +368,7 @@ to reproduce the plain 2D behaviour and ablate it.
 from dataset_reader import PRT3DDataset, split_by_geometry
 tr, te = split_by_geometry("dataset/dataset.h5", frac=0.15)
 train = PRT3DDataset("dataset/dataset.h5", indices=tr, n_points=8192)
-# branch1 (1,64,64,64)   branch2 (6,)   trunk (8192,5)   target (8192,4)
+# branch1 (1,64,64,64)   branch2 (6,)   trunk (8192,5)   target (8192,)
 ```
 
 It splits by **geometry**, never by sample — a sample split leaks pore structure

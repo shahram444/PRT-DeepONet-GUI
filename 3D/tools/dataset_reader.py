@@ -1,42 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHAT CHANGED HERE, IN ONE LINE
-#     This file learned the FLOW PIPELINE: the velocity field can be handed to
-#     concentration branch as extra image channels, with the trunk untouched.
-#
-#   WHERE THE IDEA CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     concentration/  (their PRTDeepONet takes branch1 = [mask, ux, uy])
-#     described in Jo, Kim, Kim, Lim, Choi, Ryu and Jung, SSRN 7388394.
-#
-#   THE FOUR ADDITIONS, IN THE ORDER YOU MEET THEM BELOW
-#     1. VELOCITY_SOURCES and the velocity_informed / geom_features arguments
-#        to resolve_switches(). Three values: off, simulated, predicted.
-#        'simulated' reads samples/velocity, what the flow solver actually
-#        produced. 'predicted' reads samples/velocity_pred, what
-#        predict_velocity.py --write-back left behind.
-#     2. A NEW BRANCH IN resolve_switches(), placed AFTER switch A's branch and
-#        BEFORE the all-off branch. Order matters: A and D are alternatives and
-#        train.py refuses both, so whichever is checked first would silently
-#        win otherwise.
-#     3. _velocity_stats(), which z scores the velocity before it reaches the
-#        branch. This is not cosmetic. Raw lattice velocity is around 1e-4
-#        while the pore mask channel is 0 or 1, so an unscaled velocity channel
-#        arrives four orders of magnitude below its neighbour and the first
-#        convolution barely sees it.
-#     4. FOUR GUARDS that refuse to run rather than train on something wrong:
-#        simulated without samples/velocity, predicted without
-#        samples/velocity_pred, geom_features without geom/mis and geom/uprm,
-#        and an unrecognised velocity_informed value. Each names the command
-#        that fixes it.
-#
-#   WHAT DID NOT CHANGE
-#     With velocity_informed='off' every path through this file is the one it
-#     had before. 3D/tools/test_three_switches.py proves that bit for bit
-#     against a copy of the original implementation.
-# =============================================================================
 """
 dataset_reader.py — PyTorch Dataset over dataset_reader.h5, shaped exactly the way
 the 3D PRT-DeepONet consumes it.  This is the "ready for the model" layer.
@@ -46,7 +8,7 @@ Each item is the 4-tuple the 2D notebook's model already expects, lifted to 3D:
     branch1  (Cin, nx, ny, nz)   geometry  (+ velocity channels if requested)
     branch2  (n_params,)         dimensionless numbers
     trunk    (n_points, 5)       (x, y, z, t_norm, gdf)  at sampled pore voxels
-    target   (n_points, n_species)
+    target   (n_points,)         the SELECTED chemical species
 
 Why the trunk is SAMPLED, not full-grid
 ---------------------------------------
@@ -115,10 +77,11 @@ PORE = 2
 #                   4 columns in 2D and 5 in 3D and therefore cannot transfer,
 #                   while the flow-space trunk transfers with no modification.
 #
-# Column ORDER matters.  Trunk.forward in deeponet_model.py applies FiLM re-injection
-# to the LAST column, so the primary geometry/flow feature is always placed
-# last.  resolve_switches() below is the single place that decides the layout;
-# train.py, evaluate.py and predict.py all call it so they cannot drift apart.
+# Column ORDER matters.  The primary geometry/flow feature is always placed
+# LAST, so that a checkpoint's trunk columns can be read off in one order
+# whatever the switches were.  resolve_switches() below is the single place that
+# decides the layout; train.py, evaluate.py and predict.py all call it so they
+# cannot drift apart.
 # ===========================================================================
 
 FLOW_MODES = ("tau", "speed", "both")
@@ -138,14 +101,14 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
         branch_ch    list of branch1 channel names, in order
         trunk_dim    len(trunk_cols)
         in_channels  len(branch_ch)
-        film         True if the last trunk column is a geometry/flow feature
+        geom_col     True if the last trunk column is a geometry/flow feature
         needs_flow   True if tau / normalised velocity must be computed
         label        a short human-readable description for logs
     """
     if dim_free:
         flow_proxy = True                       # C implies A
 
-    # VELOCITY INFORMED. The published follow-up hands the CONCENTRATION
+    # SWITCH D, velocity informed. The published follow-up hands the CONCENTRATION
     # branch the velocity field as extra image channels and leaves the trunk alone.
     # It is not switch A: A REPLACES the geodesic distance with a flow coordinate in
     # the trunk, D leaves the trunk exactly as it was and adds to the branch. Their
@@ -176,23 +139,17 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
             cols = space + (["t"] if with_time else []) + feat
             label = "A flow-proxy  trunk (%s)" % ", ".join(cols)
         return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
-                    in_channels=len(branch), film=True, needs_flow=True,
+                    in_channels=len(branch), geom_col=True, needs_flow=True,
                     flow_proxy=True, dim_free=bool(dim_free),
                     velocity_informed="off", geom_features=False, label=label)
 
-    # ---- VELOCITY INFORMED, new in v1.2 ------------------------------------
-    # Placed AFTER switch A's branch above and BEFORE the all-off branch below.
-    # The order is deliberate: A and D are alternatives, train.py refuses both,
-    # and whichever branch came first would silently win if that guard were ever
-    # removed. The trunk here is the ORDINARY trunk. That is the whole point of
-    # this branch: the geometry feature stays, the velocity is added beside it.
     if velocity_informed != "off":
         branch = ["material"] + vel_ch + (["mis", "uprm"] if geom_features else [])
         cols = space + (["t"] if with_time else [])
         if distance != "none":
             cols = cols + [distance]
         return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
-                    in_channels=len(branch), film=(distance != "none"),
+                    in_channels=len(branch), geom_col=(distance != "none"),
                     needs_flow=False, flow_proxy=False, dim_free=False,
                     velocity_informed=velocity_informed, geom_features=bool(geom_features),
                     label="D velocity-informed (%s)  branch (%s)  trunk (%s)"
@@ -204,7 +161,7 @@ def resolve_switches(flow_proxy=False, dim_free=False, distance="gdf",
     if distance != "none":
         cols = cols + [distance]
     return dict(trunk_cols=cols, branch_ch=branch, trunk_dim=len(cols),
-                in_channels=len(branch), film=(distance != "none"),
+                in_channels=len(branch), geom_col=(distance != "none"),
                 needs_flow=False, flow_proxy=False, dim_free=False,
                 velocity_informed="off", geom_features=False,
                 label="OFF  trunk (%s)" % ", ".join(cols))
@@ -225,6 +182,20 @@ SWITCH_KEYS = ("flow_proxy", "dim_free", "flow_mode", "keep_geometry_channel",
                "velocity_informed", "geom_features")
 
 
+def species_of_ckpt(ck):
+    """The ONE species name a checkpoint was trained on.
+
+    A checkpoint written before the model became single-output stored a LIST
+    under "species"; take its first entry so those files still load.
+    """
+    sp = ck.get("species")
+    if isinstance(sp, (list, tuple, np.ndarray)):
+        sp = sp[0] if len(sp) else None
+    if sp is None:
+        return None
+    return sp.decode() if isinstance(sp, bytes) else str(sp)
+
+
 def dataset_kwargs_from_ckpt(ck):
     """Rebuild the exact dataset configuration a checkpoint was trained with.
 
@@ -243,10 +214,12 @@ def dataset_kwargs_from_ckpt(ck):
               keep_geometry_channel=bool(ta.get("keep_geometry_channel", False)),
               u_floor=float(ta.get("u_floor", 0.01)),
               velocity_informed=ta.get("velocity_informed", "off"),
-              geom_features=bool(ta.get("geom_features", False)))
+              geom_features=bool(ta.get("geom_features", False)),
+              species=species_of_ckpt(ck))
     ndim = 2 if (ck.get("grid") and int(ck["grid"][2]) == 1) else 3
     cfg = resolve_switches(ndim=ndim,
-                           **{k: v for k, v in kw.items() if k != "u_floor"})
+                           **{k: v for k, v in kw.items()
+                              if k not in ("u_floor", "species")})
     return kw, cfg
 
 
@@ -287,7 +260,11 @@ class PRT3DDataset(Dataset):
                   (x,y,z,gdf) — the 3D analogue of Jung's p_S(x,y,GDF).
                   A transient dataset (T>1) keeps it: (x,y,z,t,gdf), the
                   analogue of p_T(x,y,GDF,t). Pass True/False to force it.
-    normalize   : divide each species by its dataset-wide scale
+    normalize   : divide the species by its dataset-wide scale
+    species     : WHICH chemical species this model predicts. The model has a
+                  single output field, exactly as in the 2D release, so one
+                  model is trained per species. Pass a name from the file's
+                  species list; None (default) takes the FIRST one.
     """
 
     def __init__(self, h5path, indices=None, n_points=8192, full_grid=False,
@@ -295,7 +272,7 @@ class PRT3DDataset(Dataset):
                  time_index=None, seed=0, with_time=None,
                  flow_proxy=False, dim_free=False, flow_mode="tau",
                  keep_geometry_channel=False, u_floor=0.01, source_tag=0,
-                 velocity_informed="off", geom_features=False):
+                 velocity_informed="off", geom_features=False, species=None):
         self.h5path = h5path
         self.n_points = int(n_points)
         self.full_grid = bool(full_grid)
@@ -310,6 +287,7 @@ class PRT3DDataset(Dataset):
         self.u_floor = float(u_floor)
         self.velocity_informed = str(velocity_informed)
         self.geom_features = bool(geom_features)
+        self._species_arg = species
         self.source_tag = int(source_tag)      # 0 = 3D native, 1 = extruded 2D
         self._vel_stats = None                 # (mu, sd) per component, computed once
         self._flow_cache = {}                  # geom index -> (vel_norm, tau)
@@ -322,6 +300,16 @@ class PRT3DDataset(Dataset):
             self.shape = tuple(int(v) for v in h.attrs["shape"])
             self.species = [s.decode() for s in h.attrs["species"]]
             self.param_names = [s.decode() for s in h.attrs["param_names"]]
+            # PARAMETER TABLE LAYOUT. A file written with the default records
+            # two columns, (pe, da), which is what the model's parameter branch
+            # takes; one written with --params full records all six. Both are
+            # read here and train.py sizes the branch from len(param_names), so
+            # neither is truncated and neither needs a flag.
+            self.param_layout = self._text(
+                h.attrs.get("param_layout"),
+                "pe_da" if len(self.param_names) <= 2 else "full")
+            # WHICH Damkohler the single da column holds, when there is one.
+            self.da_column = self._text(h.attrs.get("da_column"), "")
             # Written on the dataset by some writers and on the group by
             # others. dict.get(key, default) evaluates the DEFAULT EAGERLY, so
             # the obvious one-liner raised KeyError on the group even when the
@@ -339,6 +327,9 @@ class PRT3DDataset(Dataset):
             self.conc_scale = np.array(cs, np.float32)
             self.T = int(h["samples/conc"].shape[1])
             self.C = int(h["samples/conc"].shape[2])
+            # self.species stays the FULL list the file holds, so callers can
+            # still ask what is available; self.target_species is the one this
+            # model predicts.
             self.has_velocity = "velocity" in h["samples"]
             self.has_velocity_pred = "velocity_pred" in h["samples"]
             self._geom_keys = set(h["geom"].keys())
@@ -348,6 +339,19 @@ class PRT3DDataset(Dataset):
             # pore voxel lists are small and reused constantly -> cache them
             mat = h["geom/material"][:]
         self.pore_idx = [np.argwhere(m == PORE).astype(np.int32) for m in mat]
+
+        # ---- pick the ONE species this model predicts -----------------------
+        if species is None:
+            self.species_index = 0
+        else:
+            name = species.decode() if isinstance(species, bytes) else str(species)
+            if name not in self.species:
+                raise ValueError(
+                    "this dataset holds no species called %r. It holds %s. "
+                    "The model predicts one field, so pick one of those."
+                    % (name, ", ".join(self.species)))
+            self.species_index = self.species.index(name)
+        self.target_species = self.species[self.species_index]
         self.indices = np.arange(self.n_all) if indices is None else np.asarray(indices)
 
         if self.with_velocity and not self.has_velocity:
@@ -362,6 +366,11 @@ class PRT3DDataset(Dataset):
             flow_mode=self.flow_mode, keep_geometry_channel=self.keep_geometry_channel,
             ndim=self.ndim, velocity_informed=self.velocity_informed,
             geom_features=self.geom_features)
+        # the parameter columns that go in as log10, by name
+        self.log_cols = np.array(
+            [i for i, n in enumerate(self.param_names)
+             if str(n).lower() == "pe" or str(n).lower().startswith("da")],
+            dtype=np.int64)
         self.trunk_cols = self.cfg["trunk_cols"]
         self.branch_ch = self.cfg["branch_ch"]
         self.in_channels = self.cfg["in_channels"]
@@ -390,6 +399,15 @@ class PRT3DDataset(Dataset):
         if "edt" not in self._geom_keys and self.dim_free:
             raise ValueError("--dim-free needs geom/edt (the wall distance); this file "
                              "has none. Re-run collect_complab_output.py.")
+
+    @staticmethod
+    def _text(v, default=""):
+        """An h5py attribute as a str, whether it was stored as bytes or not."""
+        if v is None:
+            return default
+        if isinstance(v, bytes):
+            return v.decode()
+        return str(v)
 
     # -- lazy per-worker file handle (h5py handles are not fork-safe) --------
     @property
@@ -507,10 +525,6 @@ class PRT3DDataset(Dataset):
             elif name in ("uy", "uz"):
                 continue                            # consumed by the 'ux' branch
             elif name in ("mis", "uprm"):
-                # Both are stored in VOXELS, unscaled, so the file stays readable
-                # by eye. The z-score constants ride along as attributes on the
-                # dataset rather than being hard-coded here, because they are a
-                # property of the campaign, not of the method.
                 f = self.h["geom/" + name][g].astype(np.float32)
                 a = self.h["geom/" + name].attrs
                 mu = float(a.get(name + "_mu", 0.0))
@@ -521,7 +535,12 @@ class PRT3DDataset(Dataset):
         branch1 = np.concatenate(chans, 0)
 
         branch2 = self.params[s].astype(np.float32).copy()
-        branch2[:3] = np.log10(np.maximum(branch2[:3], 1e-12))   # Pe, Da span decades
+        # Pe and every Damkohler column span decades, so they go in as log10.
+        # Taken by NAME, not by a fixed slice: the old `[:3]` was correct only
+        # for the six-column layout and would have log-transformed a
+        # half-saturation constant in any other.
+        branch2[self.log_cols] = np.log10(
+            np.maximum(branch2[self.log_cols], 1e-12))
 
         pts = self.pore_idx[g]
         if self.full_grid:
@@ -560,10 +579,11 @@ class PRT3DDataset(Dataset):
                 raise KeyError("unknown trunk column %r" % name)
         trunk = np.stack([np.asarray(c, np.float32) for c in cols], 1)
 
-        conc = self.h["samples/conc"][s, t].astype(np.float32)      # (C,nx,ny,nz)
-        target = conc[:, xi, yi, zi].T                              # (P, C)
+        c = self.species_index
+        conc = self.h["samples/conc"][s, t, c].astype(np.float32)   # (nx,ny,nz)
+        target = conc[xi, yi, zi]                                   # (P,)
         if self.normalize:
-            target = target / self.conc_scale[None, :]
+            target = target / self.conc_scale[c]
 
         if torch is None:
             return branch1, branch2, trunk, target
@@ -572,8 +592,18 @@ class PRT3DDataset(Dataset):
 
 
 def scatter_to_volume(values, points, shape, fill=np.nan):
-    """(P,C) predictions at (P,3) voxel indices -> dense (C,nx,ny,nz) volume."""
-    values = np.asarray(values); points = np.asarray(points)
+    """Predictions at (P,3) voxel indices -> a dense volume.
+
+    (P,) values, which is what the single-output model gives, come back as
+    (nx,ny,nz). (P,C) values still come back as (C,nx,ny,nz), so a caller
+    holding several fields of one run keeps working.
+    """
+    values = np.asarray(values)
+    points = np.asarray(points)
+    if values.ndim == 1:
+        out = np.full(tuple(shape), fill, np.float32)
+        out[points[:, 0], points[:, 1], points[:, 2]] = values
+        return out
     out = np.full((values.shape[1],) + tuple(shape), fill, np.float32)
     out[:, points[:, 0], points[:, 1], points[:, 2]] = values.T
     return out
@@ -584,8 +614,9 @@ if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else "dataset/dataset_reader.h5"
     tr, te = split_by_geometry(path)
     ds = PRT3DDataset(path, indices=tr)
-    print("species     :", ds.species)
-    print("params      :", ds.param_names)
+    print("species     :", ds.species, " predicting:", ds.target_species)
+    print("params      :", ds.param_names, " layout:", ds.param_layout,
+          ("(da = %s)" % ds.da_column) if ds.da_column else "")
     print("grid        :", ds.shape, " snapshots:", ds.T, " fields:", ds.C)
     print("dimension   : %dD  (grid %s)" % (ds.ndim, ds.shape))
     print("switches    : %s" % ds.cfg["label"])

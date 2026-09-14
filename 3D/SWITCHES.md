@@ -1,6 +1,6 @@
-# The three feature switches, and the flow pipeline
+# The four feature switches
 
-All of them default to **OFF**. With all of them off the code does exactly what it
+All four default to **OFF**. With all four off the code does exactly what it
 did before they existed — same branch channels, same trunk columns, same order,
 bit for bit. `tools/test_three_switches.py` proves that by re-implementing the original
 `__getitem__` and asserting equality on every sample.
@@ -8,6 +8,14 @@ bit for bit. `tools/test_three_switches.py` proves that by re-implementing the o
 ```
 python tools/test_three_switches.py --data /tmp/test3d.h5
 ```
+
+The switches change what the network is shown, never its shape. With all four
+off the architecture is the published 2D PRT-DeepONet lifted one dimension:
+one output field, one scalar bias, one model per reaction system and per
+chemical species. `train.py --species NAME` chooses the species, and without
+the flag the first one in the dataset is used and the run says which. Switch D,
+the flow-aware velocity-informed path, is the published follow-up and is an
+option, off unless you ask for it.
 
 ---
 
@@ -177,48 +185,13 @@ trained on all of them, we need far fewer 16-hour runs.
 Old checkpoints keep loading: they carry no switch keys and every switch
 defaults to off.
 
-The flow pipeline added eleven more files and changed ten. They are listed with the rest of the
-project in `README.md` at the top of this folder, each marked **NEW** or **CHANGED**,
-and every one of them carries a block at the top of itself saying where its code came
-from and what was changed.
-
-| file | what |
-|------|------|
-| `tools/flow_features.py` | **new** — MIS, UPRM and dw², in two and three dimensions, `--self-test` |
-| `tools/harmonic_pressure.py` | **new** — the sparse Laplace solve behind the velocity trunk's prior, `--self-test` |
-| `tools/add_flow_features.py` | **new** — writes all three into a dataset you already have |
-| `model/velocity_model.py` | **new** — the velocity operator, the pressure U-Net, the ROI Huber loss, the divergence penalty |
-| `model/train_velocity.py` | **new** — trains the operator |
-| `model/predict_velocity.py` | **new** — runs it, and writes `samples/velocity_pred` back |
-| `model/test_flow_pipeline.py` | **new** — the whole velocity path end to end, 33 checks |
-| `model/test_reference_parity.py` | **new** — our descriptors and predicted field against theirs, value by value |
-| `../gui/test_flow_panel.py` | **new** — the window's flow pipeline panel: its steps, and whether they line up |
-| `tools/dataset_reader.py` | the velocity-informed branch layout, the velocity z scoring, four guards |
-| `model/train.py` | `--velocity-informed`, `--geom-features`, and the guard against A and D together |
-| `tools/collect_complab_output.py`, `tools/collect_foreign_complab.py` | write the three descriptors at collection time |
-| `../gui/prt_gui.py` | the flow pipeline panel, five new actions, a new sidebar group |
-| `../check_everything.py` | four more check groups |
-
 
 ---
 
-## The flow pipeline — `--velocity-informed`
-
-Not a fourth switch, and it is worth being plain about why. A, B and C are one flag
-each: you set one, you press Run, you get a model. This is four stages that have to
-run against the same dataset before the fifth can read what they wrote, so the window
-gives it a page of its own rather than a box beside the other three.
+## Switch D — `--velocity-informed`
 
 **The question it answers:** does giving the concentration network the flow field,
 and changing nothing else, make it better?
-
-**Where to find it.** On the command line it is a flag on `train.py`, like the other
-three. In the window it is not: it has a panel of its own, **The flow field → The flow
-pipeline**. A, B and C each change one training run and need nothing prepared. D needs
-three earlier stages to have run against the same dataset first, and a tick box beside
-the other three would let you start the last stage without them. The failure arrives
-minutes later as a missing key inside an HDF5 file, which is why the window shows the
-sequence as a sequence.
 
 **What it does.** Adds the velocity components to the CNN branch as extra image
 channels. The trunk is left exactly as it was.
@@ -271,7 +244,7 @@ barely registers it. The reference implementation z scores it and so does this.
 
 ### The velocity operator
 
-The `predicted` route needs a trained flow model. That is a second operator with
+Switch D's `predicted` route needs a trained flow model. That is a second operator with
 the same branch-trunk architecture and different inputs:
 
 | | |
@@ -285,28 +258,11 @@ The loss is a Huber term over the pore space plus `lambda` times the mean square
 divergence. Their sweep found the velocity error flat up to lambda 10 and clearly
 degrading past 100 while the divergence error fell throughout, so 10 is the default.
 
-The whole pipeline on the command line, in the order the window's panel runs it:
-
 ```
-# 1. the descriptors, only if the dataset predates the collectors writing them
-python tools/add_flow_features.py --data dataset.h5 --buffer 5
-
-# 2. THE CONTROL. No velocity model at all. Run this one first.
-python model/train.py --data dataset.h5 --out runs/D_sim --velocity-informed simulated
-
-# 3. the operator
 python model/train_velocity.py --data dataset.h5 --out runs/vel
-
-# 4. run it, and write the fields back beside the simulated ones
 python model/predict_velocity.py --checkpoint runs/vel/best.pt --data dataset.h5 --write-back
-
-# 5. the same run as step 2, on the predicted field instead
-python model/train.py --data dataset.h5 --out runs/D_pred --velocity-informed predicted
+python model/train.py --data dataset.h5 --out runs/D --velocity-informed predicted
 ```
-
-Three numbers at the end: the run with the flag off, `runs/D_sim`, and `runs/D_pred`.
-If `D_sim` does not beat the baseline, stop at step 2. If it does, the gap between
-`D_sim` and `D_pred` is what the velocity operator costs you.
 
 `model/test_reference_parity.py --reference <their repo>` checks our descriptors
 against theirs on their own bundled domain. It currently reports every feature and the

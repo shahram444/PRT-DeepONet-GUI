@@ -17,25 +17,19 @@ import h5py
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings_and_units import (add_param_layout_argument,           # noqa: E402
+                      param_layout_names, param_row,
+                      write_param_layout_attrs)
 from prtlb_3d import stokes_d3q19 as stokes                                  # noqa: E402
 from prtlb_3d import (SOLID, WALL, PORE, solve_adr, check_physics,   # noqa: F401
                       keep_inlet_connected, assert_finite_distance)
 
 
-# =============================================================================
-#  BLOCK 1.  A REAL PORE STRUCTURE, SMALL
-#
-#  Gaussian random media thresholded at the porosity, which is the same
-#  morphology build_geometry_3d.py makes, just tiny. That is what makes this a
-#  practice dataset rather than a fake one: the numbers below are solved, not
-#  invented, and the only thing shrunk is the grid.
-# =============================================================================
 def geometry(shape, phi, seed):
     rng = np.random.default_rng(seed)
-    # mode="wrap" so no artificial correlation is introduced at the edges.
     f = ndimage.gaussian_filter(rng.standard_normal(shape), 2.0, mode="wrap")
     g = np.where(f > np.quantile(f, 1.0 - phi), PORE, SOLID).astype(np.uint8)
-    g[:3] = g[-3:] = PORE       # three open layers at each end: inlet and outlet
+    g[:3] = g[-3:] = PORE
     g[:, 0, :] = g[:, -1, :] = g[:, :, 0] = g[:, :, -1] = WALL
     # Keep what the inlet can reach, not what is biggest -- and do it AFTER
     # the side walls go on, because sealing a face can disconnect pore space
@@ -44,22 +38,11 @@ def geometry(shape, phi, seed):
     return g
 
 
-# =============================================================================
-#  BLOCK 2.  THE GEODESIC DISTANCE, BY NEIGHBOUR RELAXATION
-#
-#  Deliberately not scikit-fmm. Every dataset in this project is built this way,
-#  so the practice file has to be built this way too, or a model trained on it
-#  meets a slightly different distance field on the real data.
-# =============================================================================
 def geodesic(g):
     """Geodesic distance from the inlet through pore space, in voxels."""
     inf = np.float32(1e9)
     d = np.where(g == PORE, inf, np.nan).astype(np.float32)
     d[0][g[0] == PORE] = 0.0
-    # An upper bound on how many sweeps a path can need, not a tuned number: a
-    # geodesic path cannot be longer than a few times the domain length. The
-    # loop breaks as soon as nothing changes, so the bound only ever stops a
-    # pathological case from running forever.
     for _ in range(4 * g.shape[0]):
         prev = d.copy()
         for ax in range(3):
@@ -102,6 +85,7 @@ def main():
     ap.add_argument("--n-times", type=int, default=3)
     ap.add_argument("--shape", type=int, nargs=3, default=[24, 16, 16])
     ap.add_argument("--stokes-iters", type=int, default=30000)
+    add_param_layout_argument(ap)
     a = ap.parse_args()
 
     shape = tuple(a.shape)
@@ -117,7 +101,7 @@ def main():
     # output heads come from the CHECKPOINT, a model trained on one and scored
     # on the other would report rmse_P for the head that learned the acceptor.
     species = ["Ac", "A"]
-    pnames = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+    pnames = param_layout_names(a.params)
     G, S = a.n_geom, a.n_geom * a.n_sets
     C, T = len(species), a.n_times
 
@@ -152,7 +136,9 @@ def main():
             pe = float(10 ** rng.uniform(-0.5, 1.5))
             da = float(10 ** rng.uniform(-1, 1))
             gi[k] = i
-            par[k] = [pe, da, da * 0.5, 0.1, 0.1, 0.05]
+            # this toy set has biotic kinetics, so its single Da is da_bio
+            par[k] = param_row(a.params, pe, da, da * 0.5, 0.1, 0.1, 0.05,
+                               biotic=True)
             vel[k] = vels[i]
             nfo = {}
             # The solver returns the times it ACTUALLY integrated to. This
@@ -180,6 +166,7 @@ def main():
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["species"] = np.array([s.encode() for s in species])
         h.attrs["param_names"] = np.array([s.encode() for s in pnames])
+        write_param_layout_attrs(h, a.params, True)
         gg = h.create_group("geom")
         gg.create_dataset("gid", data=np.arange(G, dtype=np.int32))
         gg.create_dataset("material", data=mat)

@@ -2,31 +2,36 @@
 """
 deeponet_model.py — PRT-DeepONet lifted from 2D to 3D.
 
-Straight port of the architecture in PRT-DeepONet_Monod.ipynb, with three
-changes, each forced by the extra dimension:
+The architecture is the published 2D model, block for block: a geometry branch
+CNN (5 blocks of Conv+SiLU+AvgPool, channels 16/32/64/128/256, flatten ->
+Linear -> 128) multiplied by a parameter branch FNN (3 Linear layers, input Pe
+and Da, output 128), dot-producted with a trunk (8 Linear layers, SiLU on all
+but the last, output 128), giving ONE scalar output field plus one scalar bias.
+One model is trained per reaction system and per chemical species, exactly as
+in the 2D release.
+
+Only the extra dimension forces any change, and there are three such changes:
 
 1. Conv2d -> Conv3d, AvgPool2d -> AvgPool3d.  Nothing else about the branch
    changes: a 64^3 volume through 5 halving blocks gives 2x2x2 at 256 channels
    = 2048 values, which is EXACTLY the flatten dimension of the 2D model's
    2x4x256.  The encoder ports over verbatim.
 
-2. The trunk takes 5 inputs (x, y, z, t_norm, gdf) instead of 4, and is
-   evaluated at a random subset of pore voxels rather than the full grid.  The
-   2D model evaluates all 9,472 grid points; the same thing at 64^3 is 262,144,
+2. The trunk takes (x, y, z, gdf) for a steady dataset and (x, y, z, t, gdf)
+   for a transient one, instead of the 2D (x, y, gdf) and (x, y, gdf, t).
+
+3. The trunk is evaluated at a random subset of pore voxels rather than the
+   full grid.  This is a memory necessity, not an architecture change: the 2D
+   model evaluates all 9,472 grid points; the same thing at 64^3 is 262,144,
    which is a 26.8 GB activation tensor at batch 25.  At 8,192 sampled points
    the trunk costs 944 MMACs -- slightly LESS than the 2D model's 1,091 -- and
    memory stays near 0.3 GB.  Subsampling happens in dataset_reader.py.
 
-3. Multi-species output.  The branch emits n_species x p coefficients against
-   ONE shared trunk, rather than n_species independent trunks.  The trunk is the
-   part exposed to the per-voxel cost, so duplicating it would multiply the
-   dominant cost by the number of species for no benefit.
-
 Shapes
     branch1  (B, Cin, nx, ny, nz)     geometry (+3 velocity channels, optional)
     branch2  (B, n_params)            dimensionless numbers
-    trunk    (B, P, 5)                sampled query points
-    ->       (B, P, n_species)
+    trunk    (B, P, 4 or 5)           sampled query points
+    ->       (B, P)
 """
 
 import numpy as np
@@ -82,17 +87,10 @@ class BranchCNN3D(nn.Module):
         return self.fc(x.reshape(x.size(0), -1))
 
 
-# =============================================================================
-#  BLOCK 2.  THE PARAMETER BRANCH
-#
-#  The dimensionless groups: Peclet, the Damkohler numbers, the half saturation
-#  constants and the yield. Three layers is enough because there are only a
-#  handful of numbers and no structure among them to discover.
-# =============================================================================
 class BranchFNN(nn.Module):
-    """Parameter branch: the dimensionless groups."""
+    """Parameter branch: the dimensionless groups, Pe and Da."""
 
-    def __init__(self, in_dim=6, out_dim=128, hidden_dim=128, num_layers=3):
+    def __init__(self, in_dim=2, out_dim=128, hidden_dim=128, num_layers=3):
         super().__init__()
         layers = [nn.Linear(in_dim, hidden_dim), nn.SiLU()]
         for _ in range(num_layers - 2):
@@ -104,85 +102,50 @@ class BranchFNN(nn.Module):
         return self.net(x)
 
 
-# =============================================================================
-#  BLOCK 3.  THE TRUNK, AND WHY IT KEEPS BEING SHOWN THE GEOMETRY
-# =============================================================================
 class Trunk(nn.Module):
-    """Trunk on (x, y, z, t_norm, geodesic_distance).
+    """Trunk on (x, y, z, gdf) for a steady dataset, (x, y, z, t, gdf) for a
+    transient one.  A plain stack of Linear layers with SiLU on every layer
+    except the last, which is the published 2D trunk unchanged apart from the
+    extra coordinate."""
 
-    `inject_every` re-feeds the geometry feature (the last input column) into
-    every Nth hidden layer.  Deep networks with a single early geometry input
-    provably lose that information with depth -- "Do Neural Operators Forget
-    Geometry?" (2026) formalises it via a data-processing-inequality argument.
-    The 2D model is shallow enough not to care; a 3D one is not.  Set
-    inject_every=0 to reproduce the plain 2D behaviour.
-    """
-
-    def __init__(self, in_dim=5, out_dim=128, num_layers=8, width=128,
-                 inject_every=3):
+    def __init__(self, in_dim=5, out_dim=128, num_layers=8, width=128):
         super().__init__()
-        self.inject_every = int(inject_every)
         self.in_dim = in_dim
         self.first = nn.Linear(in_dim, width)
-        self.hidden = nn.ModuleList()
-        self.film = nn.ModuleList()
-        for i in range(num_layers - 2):
-            self.hidden.append(nn.Linear(width, width))
-            use = self.inject_every > 0 and (i + 1) % self.inject_every == 0
-            self.film.append(nn.Linear(1, 2 * width) if use else None)
+        self.hidden = nn.ModuleList(
+            nn.Linear(width, width) for _ in range(num_layers - 2))
         self.last = nn.Linear(width, out_dim)
         self.act = nn.SiLU()
 
     def forward(self, x):
-        # The LAST column by convention, not by name. dataset_reader.py builds
-        # the trunk in this order and both ends have to agree; that agreement
-        # lives in resolve_switches().
-        geo = x[..., -1:]                      # the geodesic column
         h = self.act(self.first(x))
-        for lin, film in zip(self.hidden, self.film):
+        for lin in self.hidden:
             h = self.act(lin(h))
-            if film is not None:               # FiLM re-injection
-                gb = film(geo)
-                g, b = gb.chunk(2, dim=-1)
-                h = h * (1 + g) + b
         return self.last(h)
 
 
-# =============================================================================
-#  BLOCK 4.  THE WHOLE NETWORK
-#
-#  branch1 (geometry) times branch2 (parameters), dotted with the trunk. A
-#  DeepONet's product-then-sum gives ONE number per query point, and there are
-#  several chemicals, so the head widens the fused code to one coefficient
-#  vector per species before the dot product.
-# =============================================================================
 class PRT_DeepONet3D(nn.Module):
-    """branch1 (geometry) * branch2 (parameters), dotted with the shared trunk."""
+    """branch1 (geometry) * branch2 (parameters), dotted with the trunk.
 
-    def __init__(self, in_channels=1, n_params=6, n_species=4, out_dim=128,
+    One scalar output field plus one scalar bias, which is the 2D formulation
+    exactly.  A dataset holding several chemical species is handled the way the
+    2D release handles it: one model per species, selected at training time.
+    """
+
+    def __init__(self, in_channels=1, n_params=2, out_dim=128,
                  trunk_in_dim=5, cnn_blocks=5, trunk_layers=8, trunk_width=128,
-                 grid=(64, 64, 64), inject_every=3):
+                 grid=(64, 64, 64)):
         super().__init__()
-        self.n_species = n_species
         self.out_dim = out_dim
         self.branch1 = BranchCNN3D(in_channels, out_dim, cnn_blocks, grid)
         self.branch2 = BranchFNN(n_params, out_dim)
-        self.trunk = Trunk(trunk_in_dim, out_dim, trunk_layers, trunk_width,
-                           inject_every)
-        # one set of p coefficients per species, from the fused branch code
-        self.head = nn.Linear(out_dim, n_species * out_dim)
-        # One learned bias per species. The dot product has no constant term,
-        # and a concentration field has a mean.
-        self.bias = nn.Parameter(torch.zeros(n_species))
+        self.trunk = Trunk(trunk_in_dim, out_dim, trunk_layers, trunk_width)
+        self.bias = nn.Parameter(torch.zeros(1))
 
     def forward(self, b1, b2, trunk_pts):
         code = self.branch1(b1) * self.branch2(b2)          # (B, p)
-        coef = self.head(code).view(-1, self.n_species, self.out_dim)
         basis = self.trunk(trunk_pts)                       # (B, P, p)
-        # einsum rather than a reshape and a matmul: the index letters say what
-        # is contracted, which is the part that is easy to get silently wrong.
-        out = torch.einsum("bsp,bnp->bns", coef, basis)     # (B, P, S)
-        return out + self.bias
+        return (basis * code.unsqueeze(1)).sum(-1) + self.bias   # (B, P)
 
 
 def count_parameters(m):
@@ -190,11 +153,11 @@ def count_parameters(m):
 
 
 if __name__ == "__main__":
-    for cin, nsp in ((1, 4), (4, 4)):
-        m = PRT_DeepONet3D(in_channels=cin, n_species=nsp)
+    for cin, npar in ((1, 2), (4, 3)):
+        m = PRT_DeepONet3D(in_channels=cin, n_params=npar)
         b1 = torch.randn(2, cin, 64, 64, 64)
-        b2 = torch.randn(2, 6)
+        b2 = torch.randn(2, npar)
         tk = torch.rand(2, 8192, 5)
         y = m(b1, b2, tk)
-        print("in_channels=%d  params=%.2fM  out=%s"
-              % (cin, count_parameters(m) / 1e6, tuple(y.shape)))
+        print("in_channels=%d  n_params=%d  params=%.2fM  out=%s"
+              % (cin, npar, count_parameters(m) / 1e6, tuple(y.shape)))

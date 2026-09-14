@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/models/PRT-DeepONet_Velocity_load.ipynb, code cell 3
-#     (functions uprm_map, _local_thickness, _sphere_paint, mis_map, dw2_map)
-#
-#   WHAT THEIR 2D CODE DOES
-#     Computes three maps of a pore image: MIS (how wide the pore is at each
-#     pixel), UPRM (how wide the narrowest throat between the inlet and that
-#     pixel is) and the squared wall distance. Fixed 64 x 148 grid, flow along
-#     the SECOND axis, a hard-coded 10 pixel buffer, and z-scoring constants
-#     baked into the notebook as literals.
-#
-#   WHAT WE CHANGED, AND WHY
-#     1. N DIMENSIONS. Every function now works on a 2D image or a 3D volume.
-#        Their disk structuring element became an n-ball; their four-neighbour
-#        walk became a 2*ndim face walk. The 2D answers are unchanged, and
-#        3D/model/test_reference_parity.py proves it against their own code on
-#        their own example domain, value for value.
-#     2. FLOW ON AXIS 0. They store (64, 148) with the flow along axis 1. This
-#        whole project puts the flow first. read_reference_orientation() does
-#        the transpose in ONE place instead of at every call site.
-#     3. BUFFER IS AN ARGUMENT, not the constant BUF = 10. Their campaign pads
-#        10 pixels; ours pads 5; a hand-built one may pad none. Getting this
-#        wrong measures the padding instead of the rock, so it cannot be a
-#        constant.
-#     4. SCALING IS RETURNED, NOT BAKED IN. Their notebook hard-codes
-#        UPRM_MU = 2.4316839948181954 and friends, which are properties of
-#        their 3000-domain campaign. zscore_stats() computes them for yours.
-# =============================================================================
 """The geometry descriptors the velocity operator needs, in two and three dimensions.
 
 The geodesic distance already in this project answers a transport question: how far
@@ -140,11 +108,6 @@ def read_reference_orientation(arr, flow_axis=0):
     return np.moveaxis(arr, flow_axis, 0)
 
 
-# -----------------------------------------------------------------------------
-# BLOCK 1.  The structuring element
-# Their 2D code builds a disk with np.ogrid over two axes. This is the same
-# thing over ndim axes, so one function serves an image and a volume.
-# -----------------------------------------------------------------------------
 def _disk(radius, ndim):
     """A boolean ball of the given radius, as a structuring element."""
     r = int(np.ceil(radius))
@@ -164,18 +127,11 @@ def _local_thickness(pore, r_step=0.5):
     difference between this and the distance transform itself.
     """
     pore = np.asarray(pore, bool)
-    # The distance transform gives the radius of the largest sphere CENTRED at
-    # each voxel. That is not what we want: a voxel one step from a grain can
-    # still lie inside a large sphere centred further in. So use the transform
-    # only to find where big spheres can sit, then paint outward from there.
     edt = distance_transform_edt(pore).astype(np.float32)
     rmax = float(edt.max()) if pore.any() else 0.0
     if rmax <= 0:
         return np.zeros_like(edt)
     out = np.zeros_like(edt)
-    # Largest radius first. A voxel keeps the FIRST radius that reaches it,
-    # which is therefore the largest, and later smaller spheres cannot
-    # overwrite it. Their code relies on the same ordering.
     for r in np.arange(rmax, 0, -r_step):
         centers = pore & (edt >= r - 1e-6)
         if not centers.any():
@@ -256,15 +212,11 @@ def uprm_map(pore, connectivity=1):
     closed, and this project has already been caught once by labelling with 26
     connectivity while the physics used 6.
     """
-    # This is a WIDEST PATH problem, not a shortest path one. Dijkstra
-    # minimises a sum along the route; here we maximise the MINIMUM along it,
-    # because a sphere cannot pass a throat narrower than itself. Same heap,
-    # different relaxation rule.
     pore = np.asarray(pore, bool)
     edt = distance_transform_edt(pore).astype(np.float32)
-    best = np.zeros(pore.shape, np.float32)      # best bottleneck found so far
-    seen = np.zeros(pore.shape, bool)            # settled, never revisited
-    heap = []                                    # max-heap, via negated keys
+    best = np.zeros(pore.shape, np.float32)
+    seen = np.zeros(pore.shape, bool)
+    heap = []
 
     inlet = np.argwhere(pore[0])
     for cell in inlet:
@@ -295,8 +247,6 @@ def uprm_map(pore, connectivity=1):
                 continue
             if not pore[nb] or seen[nb]:
                 continue
-            # The relaxation. What can reach the neighbour is the smaller of
-            # what reached here and the neighbour's own inscribed radius.
             cand = min(here, float(edt[nb]))
             if cand > best[nb]:
                 best[nb] = cand

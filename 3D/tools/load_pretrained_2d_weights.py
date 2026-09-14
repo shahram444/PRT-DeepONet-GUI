@@ -17,20 +17,20 @@ WHAT IS IN HIS CHECKPOINT
     trunk_net     Linear 4 -> 128, six 128 -> 128, 128 -> 128   (8 layers)
     bias          one number                              (ONE species)
 
-WHAT MATCHES AND WHAT DOES NOT
+WHAT MATCHES
+    Everything.  Our model is his architecture lifted one dimension, so in 2D
+    mode with two parameters every tensor in his checkpoint has a
+    shape-identical counterpart in ours and the load is exact.
     branch1  matches exactly.  Note 2048 = 256 x (148/32) x (64/32), so it is
              tied to the 148 x 64 grid; a different grid changes that number and
              the fc layer will not load.
     trunk    matches exactly, INCLUDING the input width of 4, which is
-             (x, y, t, GDF) -- precisely what our 2D mode builds.  This is the
-             single most useful fact here: the geometry-sensing part of his
-             network drops straight into ours.
-    branch2  his takes 2 numbers, ours takes 6.  Loadable only if we also run
-             with two parameters.
-    output   his network predicts ONE species and has no head layer, because
-             with one species the branch code is already the coefficient
-             vector.  Ours always has a head.  So the head is always freshly
-             initialised, whatever else transfers.
+             (x, y, t, GDF) -- precisely what our 2D mode builds.
+    branch2  matches at --n-params 2, which is his Pe and Da.  A dataset with a
+             third dimensionless group needs --n-params 3, and then his first
+             parameter-branch layer is skipped and it says so.
+    bias     one number in his checkpoint and one number in ours, because both
+             networks predict ONE field.
 
 WHAT THIS IS AND IS NOT
     It is a way to start from a geometry encoder that already works, and spend
@@ -58,26 +58,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from deeponet_model import PRT_DeepONet3D, count_parameters                # noqa: E402
 
 
-# =============================================================================
-#  BLOCK 1.  THEIR KEY NAMES, TO OURS
-#
-#  Both networks have the same eight trunk layers in the same order, so the
-#  mapping is POSITIONAL: their trunk_net.0 is our trunk.first, their
-#  trunk_net.14 is our trunk.last, and the even indices between are our hidden
-#  list in order. The odd indices are activations and carry no weights.
-#
-#  A key that matches nothing is dropped silently HERE and reported by the
-#  caller, which counts what arrived. Raising on the first unknown key would
-#  stop the conversion on a difference that may not matter.
-# =============================================================================
 def remap(src):
     """His key names -> ours.  Both networks have the same eight trunk layers,
     so the mapping is positional and complete."""
     out = {}
-    # 0 and 14 are the first and last Linear in their Sequential. The odd
-    # indices between are activations and hold no weights at all.
     trunk_pos = {0: "trunk.first", 14: "trunk.last"}
-    # Six hidden layers, at the even indices, in order.
     for i, n in enumerate((2, 4, 6, 8, 10, 12)):
         trunk_pos[n] = "trunk.hidden.%d" % i
     for k, v in src.items():
@@ -92,11 +77,7 @@ def remap(src):
             if tgt:
                 out["%s.%s" % (tgt, tail)] = v
         elif k == "bias":
-            # Deliberately dropped. Theirs is one number for one chemical; ours
-            # is one per species. Broadcasting it would start every chemical at
-            # the same offset, which is a wrong initialisation dressed up as a
-            # loaded weight.
-            pass                       # his is (1,), ours is (n_species,)
+            out["bias"] = v
     return out
 
 
@@ -106,10 +87,15 @@ def main():
                     help="one of 2D/parameters/*.pt")
     ap.add_argument("--grid", type=int, nargs=2, default=[148, 64],
                     help="the 2D grid his fc layer was trained on")
-    ap.add_argument("--n-species", type=int, default=1)
     ap.add_argument("--n-params", type=int, default=2,
-                    help="his parameter branch takes 2 (Pe and Da). Use 6 to "
-                         "match our datasets, and his branch2 will be skipped.")
+                    help="his parameter branch takes 2 (Pe and Da), which is "
+                         "also our default. Use 3 if your dataset carries a "
+                         "third dimensionless group, and his branch2 first "
+                         "layer will be skipped.")
+    ap.add_argument("--species", default="C", metavar="NAME",
+                    help="the chemical this warm start is for. Recorded in the "
+                         "saved checkpoint; the model predicts one field, so "
+                         "one warm start belongs to one species.")
     ap.add_argument("--save", default=None,
                     help="write a checkpoint our train.py can --init-from")
     a = ap.parse_args()
@@ -124,9 +110,8 @@ def main():
     print("  tensors            : %d" % len(src))
 
     nx, ny = a.grid
-    model = PRT_DeepONet3D(in_channels=1, n_params=a.n_params,
-                           n_species=a.n_species, trunk_in_dim=4,
-                           grid=(nx, ny, 1), inject_every=0)
+    model = PRT_DeepONet3D(in_channels=1, n_params=a.n_params, trunk_in_dim=4,
+                           grid=(nx, ny, 1))
     print("our model in 2D mode : grid %d x %d x 1, trunk 4 inputs "
           "(x, y, t, gdf), %.2fM parameters"
           % (nx, ny, count_parameters(model) / 1e6))
@@ -162,7 +147,14 @@ def main():
         for k in fresh:
             print("   %-34s %s" % (k, tuple(own[k].shape)))
 
-    model.load_state_dict(took, strict=False)
+    # With one scalar bias and a two-input parameter branch every tensor he
+    # ships has a counterpart of the same shape, so at --n-params 2 the load is
+    # STRICT: anything missing is a real mismatch and must not pass quietly.
+    if not missing and not shape_clash and not unknown:
+        model.load_state_dict(took, strict=True)
+        print("\nstrict load             : every tensor matched")
+    else:
+        model.load_state_dict(took, strict=False)
 
     # a forward pass, because "the shapes match" is not the same as "it runs"
     b1 = torch.zeros(1, 1, nx, ny, 1)
@@ -178,9 +170,8 @@ def main():
     if a.save:
         torch.save({"model": model.state_dict(),
                     "args": {"distance": "gdf", "with_velocity": False},
-                    "species": ["C"][:a.n_species] if a.n_species == 1
-                               else ["s%d" % i for i in range(a.n_species)],
-                    "param_names": ["pe", "da"][:a.n_params] if a.n_params == 2
+                    "species": a.species,
+                    "param_names": ["pe", "da"] if a.n_params == 2
                                    else ["p%d" % i for i in range(a.n_params)],
                     "trunk_in_dim": 4, "with_time": True, "n_times": 1,
                     "in_channels": 1, "grid": [nx, ny, 1],
@@ -190,8 +181,8 @@ def main():
         print("use it with:")
         print("  python ../model/train.py --data <2d dataset.h5> \\")
         print("         --init-from %s --freeze-trunk" % a.save)
-        print("\nThe dataset must match: %d x %d grid, %d species, %d parameters."
-              % (nx, ny, a.n_species, a.n_params))
+        print("\nThe dataset must match: %d x %d grid, %d parameters, and be "
+              "trained with --species %s." % (nx, ny, a.n_params, a.species))
 
     print("""
 WHAT THIS DOES AND DOES NOT GIVE YOU

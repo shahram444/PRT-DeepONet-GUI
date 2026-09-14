@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHAT CHANGED HERE, IN ONE LINE
-#     While collecting a campaign this file now also writes the three flow
-#     descriptors the flow pipeline wants: geom/mis, geom/uprm and geom/dw2.
-#
-#   WHERE THE DESCRIPTORS CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     ported into 3D/tools/flow_features.py, which is what is called below.
-#     MIS is how wide the pore is at each voxel. UPRM is how wide the NARROWEST
-#     THROAT between the inlet and that voxel is. dw2 is the squared wall
-#     distance, scaled to [0, 1].
-#
-#   WHY THEY ARE COMPUTED HERE RATHER THAN AT TRAINING TIME
-#     They depend on the GEOMETRY ALONE, not on the run conditions. A campaign
-#     of 500 runs over 20 rocks has 20 answers, not 500, and computing them
-#     once at collection costs about a second a rock. Doing it in the training
-#     loop would redo the same work on every epoch of every run.
-#
-#   THE TWO NEW FLAGS
-#     --no-flow-features   skip them entirely. The dataset stays perfectly
-#                          usable; add_flow_features.py can put them in later
-#                          without recollecting anything.
-#     --flow-buffer N      how many OPEN voxels pad each end of the flow axis.
-#                          This must match your campaign: 10 for the published
-#                          2D set, 5 for the geometries this project generates,
-#                          0 for none. Get it wrong and the MIS treatment
-#                          measures your padding instead of your rock.
-#
-#   IF THE DESCRIPTOR STEP FAILS
-#     It is caught, reported by name, and collection continues. A missing
-#     descriptor is RECORDED, never invented, which is the same rule the rest
-#     of this collector already follows for every other absent field.
-# =============================================================================
 """
 collect_complab_output.py — turn a finished CompLaB campaign into ONE training-ready HDF5 file,
 and report every run that failed and why.
@@ -76,6 +41,11 @@ HDF5 layout
 import argparse, base64, csv, json, os, re, struct, sys, zlib
 from collections import Counter, OrderedDict
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings_and_units import (add_param_layout_argument,           # noqa: E402
+                      param_layout_names, param_row,
+                      write_param_layout_attrs)
 
 
 # ======================================================================= VTI
@@ -408,6 +378,7 @@ def main():
                         "unique so there are no collisions.")
     p.add_argument("--geometries", required=True)
     p.add_argument("--out", default="./dataset")
+    add_param_layout_argument(p)
     p.add_argument("--mode", choices=["steady", "transient"], default="steady",
                    help="steady: the final snapshot only (T=1). transient: a time "
                         "series, which is what makes the trunk's t input mean "
@@ -420,7 +391,7 @@ def main():
                         "grows linearly in K.")
     p.add_argument("--no-velocity", action="store_true")
     p.add_argument("--no-flow-features", action="store_true",
-                   help="skip MIS and UPRM, the flow descriptors. They depend "
+                   help="skip MIS and UPRM, the switch D descriptors. They depend "
                         "only on the geometry; add_flow_features.py adds them later.")
     p.add_argument("--flow-buffer", type=int, default=10,
                    help="open buffer voxels at each end, for the MIS treatment")
@@ -542,7 +513,7 @@ def main():
         gg.create_dataset("gdf", data=gdf, compression=comp)
         gg.create_dataset("edt", data=edt, compression=comp)
 
-        # ---- the flow descriptors ---------------------------------------------
+        # ---- the flow descriptors, for switch D -------------------------------
         # MIS and UPRM depend only on the geometry, so they are computed here, once
         # per rock, rather than on every training run. --no-flow-features skips them
         # if the extra second per rock matters; add_flow_features.py can put them in
@@ -586,16 +557,24 @@ def main():
                       % (_mmu, _msd, _umu, _usd))
             except Exception as _e:
                 # A missing descriptor is recorded, never invented. The dataset is
-                # still perfectly usable without the flow pipeline.
+                # still perfectly usable without switch D.
                 print("  NOTE: flow descriptors not written (%s). Add them later with "
                       "add_flow_features.py." % _e)
 
         sg = h.create_group("samples")
         sg.create_dataset("geom_index", data=np.array([gindex[r[1]["gid"]] for r in recs], np.int32))
         sg.create_dataset("run_id", data=np.array([r[1]["run_id"] for r in recs], np.int32))
-        pnames = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+        # Pe and Da by default, the two the model's parameter branch takes;
+        # --params full keeps the six-column biotic plus abiotic vector. A
+        # campaign counts as biotic when any run in it was given a non-zero
+        # biotic Damkohler number, and that is which Da the single column holds.
+        pnames = param_layout_names(args.params)
+        _biotic = any(float(r[1].get("da_bio", 0.0)) > 0.0 for r in recs)
         sg.create_dataset("params", data=np.array(
-            [[r[1][k] for k in pnames] for r in recs], np.float32))
+            [param_row(args.params, r[1]["pe"], r[1]["da_bio"],
+                       r[1]["da_abio"], r[1]["ks_ac_norm"],
+                       r[1]["ks_a_norm"], r[1]["y_norm"], biotic=_biotic)
+             for r in recs], np.float32))
         sg.create_dataset("t_norm", data=np.array(
             [np.asarray(r[3], np.float32) for r in recs], np.float32))
 
@@ -654,6 +633,7 @@ def main():
         sg.attrs["conc_scale"] = scale
         h.attrs["species"] = np.array(fields, dtype="S8")
         h.attrs["param_names"] = np.array(pnames, dtype="S16")
+        write_param_layout_attrs(h, args.params, _biotic)
         h.attrs["mode"] = args.mode
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["n_samples"] = S

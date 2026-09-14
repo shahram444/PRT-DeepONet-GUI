@@ -51,6 +51,11 @@ import numpy as np
 import h5py
 from scipy import ndimage
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings_and_units import (add_param_layout_argument,           # noqa: E402
+                      param_layout_names, param_row,
+                      write_param_layout_attrs)
+
 SOLID, WALL, PORE = 0, 1, 2
 
 GEOM_KEYS = ["material", "domain", "geometry", "geom", "mask", "m", "phase", "img"]
@@ -62,17 +67,6 @@ DA_KEYS = ["da", "damkohler", "da_number", "da_bio"]
 T_KEYS = ["t", "time", "t_norm", "times"]
 
 
-# =============================================================================
-#  BLOCK 1.  FINDING THINGS IN SOMEBODY ELSE'S FILE
-#
-#  Nothing here assumes a key name. An npz that came from another group names
-#  its arrays whatever that group named them, so each field is looked up under
-#  several plausible names AND checked for the right rank. A key that matches
-#  by name but not by shape is not the array wanted.
-#
-#  An absence is RECORDED, never invented. A run with no velocity is imported
-#  without one and says so, rather than being imported with zeros.
-# =============================================================================
 def _find(d, keys, ndim=None):
     low = {str(k).lower(): k for k in d}
     for k in keys:
@@ -111,14 +105,6 @@ def to_mask(a):
     return np.where(a > 0, PORE, SOLID).astype(np.uint8)
 
 
-# =============================================================================
-#  BLOCK 2.  WHAT WE ADD TO WHAT THEY SENT
-#
-#  The distance fields are computed here rather than trusted from the file, and
-#  by the same neighbour relaxation every other dataset in this project uses. A
-#  geodesic field computed a different way is a different input, and a model
-#  trained across both would see two distance scales.
-# =============================================================================
 def geodesic_2d(g):
     INF = np.float32(1e9)
     d = np.where(g == PORE, INF, np.nan).astype(np.float32)
@@ -153,9 +139,6 @@ def shape_conc(c, n_species):
     raise ValueError("concentration has %d dimensions, expected 2, 3 or 4" % c.ndim)
 
 
-# =============================================================================
-#  BLOCK 3.  ONE RUN
-# =============================================================================
 def read_run(path, n_species):
     z = np.load(path, allow_pickle=True)
     d = {k: z[k] for k in z.files}
@@ -185,6 +168,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="report what was found and write nothing. USE THIS "
                          "FIRST, on a single example run.")
+    add_param_layout_argument(ap)
     ap.add_argument("--n-species", type=int, default=1)
     ap.add_argument("--species", nargs="*", default=None)
     ap.add_argument("--pe", type=float, default=None,
@@ -291,9 +275,10 @@ def main():
     C = max(r["conc"].shape[1] for r in ok)
     species = a.species or (["C"] if C == 1 else ["s%d" % i for i in range(C)])
     species = list(species)[:C] + ["s%d" % i for i in range(len(species), C)]
-    # collect_complab_output.py's names, so every writer in this project agrees and the rate
-    # figures do not silently fall back to their defaults.
-    pnames = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+    # collect_complab_output.py's names and order, so every writer in this
+    # project agrees and the rate figures do not silently fall back to their
+    # defaults. Two columns by default, six with --params full.
+    pnames = param_layout_names(a.params)
 
     # geometries: identical masks are shared, so the train/test split by
     # geometry stays meaningful
@@ -349,7 +334,10 @@ def main():
                 vel[i, :v.shape[0]] = v[..., None]
             elif v.ndim == 3 and v.shape[-1] in (2, 3):
                 vel[i, :v.shape[-1]] = np.moveaxis(v, -1, 0)[..., None]
-        par[i] = [r["pe"], r["da"], r["da"], 0.1, 0.1, 0.05]
+        # An imported run carries one Da and no way to say which reaction it
+        # belonged to, so it is recorded as the biotic one.
+        par[i] = param_row(a.params, r["pe"], r["da"], r["da"],
+                           0.1, 0.1, 0.05, biotic=True)
 
     scale = np.maximum(
         conc.reshape(S * T * C, -1).max(1).reshape(S, T, C).max((0, 1)), 1e-6)
@@ -359,6 +347,7 @@ def main():
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["species"] = np.array([s.encode() for s in species])
         h.attrs["param_names"] = np.array([s.encode() for s in pnames])
+        write_param_layout_attrs(h, a.params, True)
         h.attrs["dimension"] = 2
         h.attrs["source"] = b"external_2d_simulations"
         gg = h.create_group("geom")

@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# NEW IN THE FLOW VERSION.  This file exists BECAUSE of the 2D version.
-#
-#   WHERE THE REFERENCE CODE CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/models/PRT-DeepONet_Velocity_load.ipynb  (feature cell and weights)
-#     plus their bundled example domain, Domain_Velocity.npz
-#
-#   WHAT IT CHECKS, AND WHY IT IS THE MOST IMPORTANT TEST HERE
-#     Loading their released checkpoint into our rewritten classes proves the
-#     SHAPES agree. That is a weak claim: two different functions can have the
-#     same tensor shapes. This file proves the NUMBERS agree. It copies their
-#     feature functions VERBATIM out of the notebook, runs them beside ours on
-#     their own domain, compares MIS, UPRM and dw2 value by value, then runs
-#     their trained weights twice, once fed by their features and once by ours,
-#     and compares the two predicted velocity fields.
-#
-#     It currently reports every value identical, max abs difference 0.
-#
-#   WHAT TO DO IF IT EVER STOPS SAYING THAT
-#     Stop comparing anything with their published numbers. From that moment
-#     on you would be measuring our reimplementation, not their method. Find
-#     the difference first.
-#
-#   WHY IT CAN SKIP
-#     It needs their repository on the machine, which most users will not
-#     have. When it is absent the test SKIPS and says so in different words
-#     from passing, because a skip is a weaker statement than a pass and the
-#     two must not be confused in a log.
-# =============================================================================
 """Our descriptors against theirs, on their own example domain, voxel by voxel.
 
 Loading the released weights proves the SHAPES match. This proves the NUMBERS do.
@@ -70,18 +40,6 @@ VEL_MU_V, VEL_SD_V = 6.503713052552484e-07,  0.00029989489121362567
 RE_B2 = {0: 0.009110829792916775, 1: 0.02172919735312462, 2: 0.04727563634514809}
 
 # ============================== THEIR code, copied verbatim from the load notebook
-# =============================================================================
-#  BLOCK 1.  THEIR CODE, COPIED VERBATIM
-#
-#  Everything named their_* below is transcribed from the released load
-#  notebook without a single edit, including the parts we would write
-#  differently. That is the whole point: an improved copy would be a third
-#  implementation, and agreeing with it would prove nothing about theirs.
-#
-#  So do not tidy these. If one of them looks wrong, it is either wrong in
-#  their released code too, in which case our port has to match it, or it has
-#  been transcribed incorrectly, which is a bug in this file.
-# =============================================================================
 def their_uprm_map(m):
     H, W = m.shape; void = (m > 0)
     e = distance_transform_edt(void).astype(np.float32)
@@ -140,14 +98,6 @@ def their_dw2_map(m):
     o = np.zeros_like(f2); o[pore] = np.clip((f2[pore]-DW2_MIN)/(DW2_MAX-DW2_MIN), 0, 1)
     return o.astype(np.float32)
 
-# =============================================================================
-#  BLOCK 2.  RUN BOTH, AND COMPARE
-#
-#  All three maps first, on their own bundled domain. Then their trained weights
-#  twice over: once fed by their features and once by ours, comparing the two
-#  predicted velocity fields. The second half is what catches a difference too
-#  small to see in a feature map but large enough to move the network.
-# =============================================================================
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Our flow descriptors against the released ones, voxel by voxel.")

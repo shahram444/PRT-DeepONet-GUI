@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# NEW IN THE FLOW VERSION.  There is no 2D counterpart of this file.
-#
-#   WHAT IT IS
-#     The end to end test of everything the flow work added. Four groups: the
-#     descriptors' own self tests, the port checked against the released 2D
-#     weights, the whole pipeline wired up on a dataset this file builds for
-#     itself, and the guards that are supposed to refuse bad combinations.
-#
-#   WHY IT EXISTS
-#     The Jung Lab release ships notebooks, not tests. A notebook proves a
-#     result on one machine on one day. Porting it to N dimensions and to a
-#     different axis convention is exactly the kind of change that keeps
-#     running while quietly returning the wrong numbers, so the port needed a
-#     test that runs on demand and fails loudly.
-#
-#   WHAT IT DOES NOT DO
-#     It says nothing about ACCURACY. The dataset it builds is a handful of
-#     tiny synthetic rocks and the training it runs is two epochs. Passing
-#     means the shapes line up, the scaling survives a round trip and the
-#     guards fire. It does not mean the model is any good.
-# =============================================================================
 """The velocity pipeline, end to end, on a dataset this test builds itself.
 
 Four groups.
@@ -97,14 +75,7 @@ def run(cmd, **kw):
                           cwd=HERE, env=env, **kw)
 
 
-# =============================================================================
-#  GROUP 1.  THE DESCRIPTORS' OWN SELF TESTS
-#
-#  flow_features.py and harmonic_pressure.py each carry their own --self-test,
-#  and this runs them as subprocesses rather than importing them. That is
-#  deliberate: it is the same command a user would type, so a failure here is
-#  reproducible by hand instead of only inside this file.
-# =============================================================================
+# ------------------------------------------------------------------ 1 descriptors
 def group_descriptors():
     print("\n1  the descriptors")
     for mod in ("flow_features.py", "harmonic_pressure.py"):
@@ -115,15 +86,7 @@ def group_descriptors():
               "" if good else r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[:200])
 
 
-# =============================================================================
-#  GROUP 2.  THE PORT, AGAINST THE RELEASED WEIGHTS
-#
-#  Loading their checkpoint into our classes proves the shapes agree. It SKIPS,
-#  loudly and in different words from passing, when their repository is not on
-#  the machine, because most users will not have it and a skip is a weaker
-#  statement than a pass. The stronger check, value against value, is
-#  test_reference_parity.py.
-# =============================================================================
+# ------------------------------------------------------------------------ 2 port
 def group_port(reference):
     print("\n2  the port against the released weights")
     if not reference:
@@ -140,18 +103,7 @@ def group_port(reference):
           r.returncode == 0)
 
 
-# =============================================================================
-#  GROUP 3.  THE WIRING, END TO END
-#
-#  Builds a small dataset from scratch, trains the velocity operator on it for a
-#  couple of epochs, predicts, writes the field back, and trains the
-#  concentration model on what it wrote. Every stage of the pipeline runs.
-#
-#  IT PROVES NOTHING ABOUT ACCURACY, and says so in its own output. Four tiny
-#  synthetic rocks and two epochs cannot. What it proves is that the shapes line
-#  up, the scaling survives a round trip through the file, and each stage can
-#  read what the one before it wrote.
-# =============================================================================
+# ---------------------------------------------------------------------- 3 wiring
 def _blob_geometry(nx, ny, seed, porosity=0.55):
     from scipy import ndimage
     rng = np.random.default_rng(seed)
@@ -300,14 +252,7 @@ def group_wiring(tmp):
                 check("the stored field is finite", bool(np.isfinite(a).all()))
 
 
-# =============================================================================
-#  GROUP 4.  THE GUARDS
-#
-#  Every one of these is a way to waste an afternoon, and every one is supposed
-#  to fail immediately with a reason. A guard that has quietly stopped firing
-#  looks exactly like a guard that is working, which is why they are tested by
-#  doing the wrong thing on purpose and requiring a non-zero exit.
-# =============================================================================
+# ---------------------------------------------------------------------- 4 guards
 def group_guards(tmp):
     print("\n4  the guards")
     ck = os.path.join(tmp, "vel", "best.pt")

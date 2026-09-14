@@ -1,8 +1,6 @@
 # Licensing, attribution and citation
 
-PRT-DeepONet Studio, version 1.2. Released 3 September 2026.
-
-Version 1.2 adds the velocity informed capability. Version 1.1, without it, is kept unchanged beside this one.
+PRT-DeepONet Studio, version 1.1. Released 31 August 2026.
 
 This file explains who wrote what, under which terms each part may be used,
 and how to cite the work. The full legal text of the GNU General Public

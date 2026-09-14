@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/models/PRT-DeepONet_Velocity.ipynb, code cells 4, 5 and 7
-#
-#   WHAT THEIR 2D CODE DOES
-#     Reads a fixed split.pt plus a folder of per-run npz files, computes the
-#     features, standardises the velocity, and trains with a Huber loss over
-#     the pore region plus lambda times the mean squared divergence.
-#
-#   WHAT WE CHANGED, AND WHY
-#     1. IT READS OUR HDF5, NOT THEIR split.pt. The same campaign that trains
-#        the concentration network trains this one, so the two cannot drift
-#        apart about which rocks are held out.
-#     2. IT CONDITIONS ON PECLET, NOT REYNOLDS. Their campaign swept Re; our
-#        datasets record Pe and do not record Re. The operator does not care
-#        which, so long as it is the same quantity at training and prediction.
-#        --condition names the column and the CHECKPOINT RECORDS IT, so the
-#        two can never silently differ.
-#     3. THE SPLIT IS BY GEOMETRY, NEVER BY RUN. Two runs on one rock share
-#        their entire pore structure, so splitting by run leaks the geometry
-#        into the test set and inflates the score.
-#     4. THE PRESSURE PRIOR IS A CHOICE. --pressure solve computes it exactly,
-#        unet uses their network, none is the ablation. Theirs is always the
-#        network.
-#     5. EARLY STOPPING WATCHES THE DATA TERM ALONE, as theirs does, and the
-#        reason is worth keeping: watching the sum would let a run getting
-#        WORSE at velocity look like it is improving because the divergence
-#        term fell, which is the opposite of what the model is for.
-# =============================================================================
 """Train the velocity operator on a dataset this project built.
 
 The released implementation reads a fixed split.pt and a folder of per run npz files.
@@ -156,10 +124,6 @@ def read_dataset(path, condition="pe", buffer=10, pressure="solve", unet_path=No
             raise SystemExit(
                 "No parameter named %r in this dataset. It has: %s.\n"
                 "Pick one with --condition." % (condition, ", ".join(pnames) or "none"))
-        # The COLUMN INDEX, resolved here once and stored in the checkpoint by
-        # name rather than by number. A dataset collected later can have its
-        # columns in a different order, and a saved index would then quietly
-        # feed the Damkohler number to a model trained on the Peclet number.
         cidx = pnames.index(condition)
 
         mat = np.asarray(h["geom/material"])
@@ -175,12 +139,9 @@ def read_dataset(path, condition="pe", buffer=10, pressure="solve", unet_path=No
         uprm = np.asarray(h["geom/uprm"], np.float32) if have_uprm else None
         pore_code = int(h.attrs["pore_code"]) if "pore_code" in h.attrs else None
 
-    # A 2D campaign is stored one voxel deep so that one reader serves both.
-    # Drop that axis here, once, rather than carrying a length-1 dimension into
-    # every convolution and every difference stencil downstream.
     if dim == 2:
         mat = mat[..., 0]
-        vel = vel[:, :2, :, :, 0] if vel.ndim == 5 else vel[:, :2]      # uz is zero
+        vel = vel[:, :2, :, :, 0] if vel.ndim == 5 else vel[:, :2]
         if mis is not None:
             mis = mis[..., 0]
         if uprm is not None:
@@ -221,9 +182,6 @@ def read_dataset(path, condition="pe", buffer=10, pressure="solve", unet_path=No
     dw2 = np.zeros_like(mis)
     e2_all = []
     for i in range(G):
-        # Unscaled on purpose. The [0, 1] range has to be fitted over the
-        # TRAINING rocks only, and which rocks those are is not known yet: the
-        # split happens after this function returns.
         d, _ = ff.dw2_map(pore[i], 0.0, 1.0)          # unscaled for now
         e2_all.append(d)
     # one scaling for the whole campaign, from the training rocks only
@@ -248,9 +206,6 @@ def read_dataset(path, condition="pe", buffer=10, pressure="solve", unet_path=No
                 o = net(x)[0].cpu().numpy()
                 for c in range(n_comp):
                     g = o[c]
-                    # A network will happily predict a pressure gradient inside
-                    # a grain. Zeroing the solid here keeps the U-Net route and
-                    # the exact-solve route giving the trunk the same thing.
                     g[~pore[i]] = 0.0
                     grads[i, c] = g
         if verbose:
@@ -295,9 +250,6 @@ def build_tensors(D, train_g, test_g, verbose=True):
         dw2_max = dw2_min + 1.0
 
     # velocity standardisation, per component, over training pore voxels
-    # Standardise each velocity component over the TRAINING pore voxels only.
-    # Fitting on everything would let the held-out rocks influence the inputs,
-    # which is a small leak but a real one.
     mu = np.zeros(n_comp, np.float64)
     sd = np.ones(n_comp, np.float64)
     for c in range(n_comp):
@@ -380,21 +332,14 @@ def train(model, train_ds, test_ds, ratios, lam=10.0, epochs=300, lr=1e-3,
             lh = crit(pred, y, roi)
             ld = (divergence_penalty(pred, inter, ratios) if lam > 0
                   else torch.zeros((), device=pred.device))
-            # ONE backward pass over the SUM. Two separate backward calls would
-            # need retain_graph and would give the same gradient more slowly.
             (lh + lam * ld).backward()
             opt.step()
-            # .detach() before float(): without it torch warns on every batch
-            # about calling a scalar conversion on a tensor that needs grad.
             run_h += float(lh.detach())
             run_d += float(ld.detach())
             nb += 1
-        # ---------------------------------------------------------------------
-        # Early stopping watches the DATA term only. Watching the sum would let
-        # a run that is getting worse at velocity look like it is improving
-        # because the divergence term fell, which is the opposite of what the
-        # model is for. Theirs does the same.
-        # ---------------------------------------------------------------------
+        # Early stopping watches the DATA term only. Watching the sum would let a run
+        # that is getting worse at velocity look like it is improving because the
+        # divergence term fell, which is the opposite of what the model is for.
         model.eval()
         tot = 0.0
         n = 0
@@ -405,13 +350,8 @@ def train(model, train_ds, test_ds, ratios, lam=10.0, epochs=300, lr=1e-3,
                 n += 1
         vl = tot / max(n, 1)
         hist.append((ep, run_h / max(nb, 1), run_d / max(nb, 1), vl))
-        # A margin, not a bare <. Float noise alone will beat the previous best
-        # every few epochs, and patience would then never run out on a run that
-        # has plainly stopped learning.
         if vl < best_v - 1e-6:
             best_v, best_ep, stale = vl, ep, 0
-            # deepcopy, not a reference: state_dict() hands back live tensors
-            # that the next optimiser step would overwrite in place.
             best = copy.deepcopy(model.state_dict())
         else:
             stale += 1
@@ -517,10 +457,6 @@ def main(argv=None):
     print("\nbest epoch %d, held-out Huber %.6f" % (ep, v))
     report(model, test_ds, stats, D["n_comp"], device)
 
-    # NOT a bare state_dict. Nothing in a state_dict says how its inputs were
-    # scaled, which grid it expects, which parameter column drove it, or which
-    # rocks it never saw, and every one of those is needed to run it correctly
-    # later. predict_velocity.py refuses a bare state_dict for this reason.
     ck = dict(model=model.state_dict(), grid=D["grid"], dim=D["dim"],
               n_comp=D["n_comp"], stats=stats, trunk_in=trunk_in,
               lam=a.lam, pressure=a.pressure, buffer=a.buffer,

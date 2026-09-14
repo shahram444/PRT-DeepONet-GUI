@@ -1948,6 +1948,79 @@ def default_chemistry(n_species=2):
 
 
 # --------------------------------------------------------------------------
+# THE PARAMETER TABLE LAYOUT
+#
+# Every dataset writer records one row of dimensionless groups per run, and the
+# model's parameter branch is built from the width of that row. The published
+# 2D PRT-DeepONet takes two numbers, Pe and Da, so that is the default here and
+# a new dataset records exactly those two. "full" keeps the six-column biotic
+# plus abiotic vector for anyone who needs it, behind an explicit --params.
+#
+# WHICH Da goes in the two-column table: the BIOTIC Damkohler number when the
+# run has biotic kinetics, and the abiotic one when it does not. The choice is
+# recorded on the file as the attribute da_column, so a reader never has to
+# guess which reaction the single Da belongs to.
+#
+# This lives here rather than in each builder because eight separate copies of
+# one column order is how the 2D and 3D builders came to disagree about what
+# channel 1 meant.
+# --------------------------------------------------------------------------
+PARAM_LAYOUTS = ("pe_da", "full")
+
+PNAMES_FULL = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+PNAMES_PE_DA = ["pe", "da"]
+
+
+def param_layout_names(layout="pe_da"):
+    """The column names of the parameter table, in order."""
+    layout = str(layout or "pe_da")
+    if layout not in PARAM_LAYOUTS:
+        raise ValueError("params layout must be one of %s, not %r"
+                         % (PARAM_LAYOUTS, layout))
+    return list(PNAMES_PE_DA if layout == "pe_da" else PNAMES_FULL)
+
+
+def da_column_name(layout="pe_da", biotic=True):
+    """Which Damkohler number the single Da column holds.
+
+    For the six-column layout both are present under their own names, so the
+    answer is the empty string rather than a lie."""
+    if str(layout or "pe_da") == "full":
+        return ""
+    return "da_bio" if biotic else "da_abio"
+
+
+def param_row(layout, pe, da_bio, da_abio, ks_donor, ks_acceptor, yield_,
+              biotic=True):
+    """One run's parameter row, in the order param_layout_names() gives."""
+    if str(layout or "pe_da") == "full":
+        return [float(pe), float(da_bio), float(da_abio),
+                float(ks_donor), float(ks_acceptor), float(yield_)]
+    return [float(pe), float(da_bio if biotic else da_abio)]
+
+
+def add_param_layout_argument(ap, default="pe_da"):
+    """--params, spelled the same way by every writer."""
+    ap.add_argument("--params", choices=list(PARAM_LAYOUTS), default=default,
+                    help="which dimensionless groups to record per run. "
+                         "'pe_da' (default) records the two the published 2D "
+                         "model uses, Pe and Da, which is what the network's "
+                         "parameter branch expects. 'full' records the "
+                         "six-column biotic plus abiotic vector "
+                         "(pe, da_bio, da_abio, ks_ac_norm, ks_a_norm, "
+                         "y_norm); the reader and the training script size the "
+                         "branch from the file, so both layouts train.")
+    return ap
+
+
+def write_param_layout_attrs(h, layout, biotic=True):
+    """Record the layout on an open h5py File so a reader can tell what it got."""
+    layout = str(layout or "pe_da")
+    h.attrs["param_layout"] = layout.encode()
+    h.attrs["da_column"] = da_column_name(layout, biotic).encode()
+
+
+# --------------------------------------------------------------------------
 # The plumbing both dataset generators share, so that --settings behaves
 # identically in 2D and in 3D. It lived in neither of them on purpose: two
 # copies of an argument parser is how the 2D and 3D builders came to disagree
@@ -2399,7 +2472,7 @@ TEMPLATE_XML = """<?xml version="1.0" ?>
 
        For each quantity you have TWO ways to say what you want, and you pick
        one. Give a RANGE and the generator draws from it at random, spaced
-       logarithmically. Log-uniform rather than uniform, because these
+       logarithmically, log-uniform rather than uniform, because these
        quantities span decades and a uniform draw would put nine tenths of the
        runs in the top decade. Give a LIST and it uses exactly those numbers
        and nothing else, which is what you want when you are reproducing

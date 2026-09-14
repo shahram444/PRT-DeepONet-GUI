@@ -18,7 +18,7 @@ WHAT IT TESTS ON
     score.
 
 WHAT IT PRODUCES
-    metrics.json         per-species and overall RMSE, R2, and per-sample rows
+    metrics.json         RMSE, R2 and the speedup for the predicted field
     rmse_table.csv       one row per held-out sample, for your own plotting
     fields_*.png         truth / prediction / absolute error, mid-plane slices
     physics_*_2d.png     FLOW, BIOTIC rate and ABIOTIC rate: truth vs prediction
@@ -27,7 +27,7 @@ WHAT IT PRODUCES
                          marching in time, truth above prediction, one column
                          per snapshot
     time_*_3d.png        the same evolution as 3D half-cut renders
-    rmse_vs_params.png   RMSE against Pe, Da_bio and Da_abio
+    rmse_vs_params.png   RMSE against the dimensionless groups the dataset has
     ablation.png + .csv  side-by-side bars when --compare is used
 """
 
@@ -39,7 +39,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 from dataset_reader import (PRT3DDataset, split_by_geometry,        # noqa
-                            scatter_to_volume, dataset_kwargs_from_ckpt)
+                            scatter_to_volume, dataset_kwargs_from_ckpt,
+                            species_of_ckpt)
 from deeponet_model import PRT_DeepONet3D                                            # noqa
 import make_figures                                                                     # noqa
 
@@ -61,11 +62,9 @@ def load_model(path, ds, device):
     ta = ck["args"]
     _, cfg = dataset_kwargs_from_ckpt(ck)
     m = PRT_DeepONet3D(in_channels=ck.get("in_channels", cfg["in_channels"]),
-                       n_params=len(ck["param_names"]), n_species=len(ck["species"]),
+                       n_params=len(ck["param_names"]),
                        trunk_in_dim=trunk_dim_of(ck),
-                       grid=ds.shape,
-                       inject_every=(ta.get("inject_every", 3)
-                                     if cfg["film"] else 0)).to(device).eval()
+                       grid=ds.shape).to(device).eval()
     m.load_state_dict(ck["model"])
     return m, ta
 
@@ -97,18 +96,19 @@ def run_one(ckpt, args, device, tag, save_fields=0):
     # rmse_A belongs to the head that learned some other chemical -- a wrong
     # answer that looks entirely reasonable. train.py guards this for the
     # transfer set; it has to be guarded here too.
-    ck_species = [s.decode() if isinstance(s, bytes) else str(s)
-                  for s in ck.get("species", [])]
-    if ck_species and list(ds.species) != ck_species:
-        sys.exit("the checkpoint was trained on chemicals %s but this dataset "
-                 "holds %s. Every error in the table is labelled from the "
-                 "dataset while the model's outputs come from the checkpoint, "
-                 "so the two would be silently mismatched. Evaluate against "
-                 "the dataset it was trained on, or rebuild the dataset with "
-                 "matching names." % (ck_species, list(ds.species)))
+    # species_of_ckpt also accepts an older checkpoint that stored a LIST here,
+    # by taking its first entry.
+    ck_species = species_of_ckpt(ck)
+    if ck_species and ds.target_species != ck_species:
+        sys.exit("the checkpoint was trained on chemical %r but this dataset "
+                 "run selected %r. Every error in the table is labelled from "
+                 "the dataset while the model's output comes from the "
+                 "checkpoint, so the two would be silently mismatched. "
+                 "Evaluate against the species it was trained on."
+                 % (ck_species, ds.target_species))
 
     model, _ = load_model(ckpt, ds, device)
-    species = ds.species
+    species = ds.target_species
 
     rows, t_inf = [], 0.0
     for k in range(len(ds)):
@@ -121,9 +121,9 @@ def run_one(ckpt, args, device, tag, save_fields=0):
         if device.type == "cuda":
             torch.cuda.synchronize()
         t_inf += time.time() - t0
-        p = pred.cpu().numpy(); t = y.numpy()
-        se = ((p - t) ** 2).mean(axis=0)
-        var = t.var(axis=0)
+        p = pred.cpu().numpy(); t = y.numpy()          # both (P,)
+        se = float(((p - t) ** 2).mean())
+        var = float(t.var())
         # R-SQUARED IS UNDEFINED ON A CONSTANT FIELD, and snapshot 0 IS a
         # constant field: the sample before anything has entered. R2 divides by
         # the variance of the truth, so a floor of 1e-30 does not rescue it, it
@@ -133,14 +133,13 @@ def run_one(ckpt, args, device, tag, save_fields=0):
         #
         # NaN is the honest value here, and it is excluded from the average
         # rather than propagated.
-        r2 = [float(1 - se[i] / var[i]) if var[i] > 1e-12 else float("nan")
-              for i in range(len(species))]
+        r2 = float(1 - se / var) if var > 1e-12 else float("nan")
         s, ti = ds._decode(k)          # sample index and snapshot index
         rows.append(dict(sample=s, t_index=ti,
                          t_norm=float(ds.t_norm[s, ti]), tag=tag,
-                         **{"rmse_" + sp: float(np.sqrt(se[i])) for i, sp in enumerate(species)},
-                         **{"r2_" + sp: r2[i] for i, sp in enumerate(species)},
-                         rmse_mean=float(np.sqrt(se.mean())),
+                         species=species,
+                         rmse=float(np.sqrt(se)), r2=r2,
+                         rmse_mean=float(np.sqrt(se)),
                          **{n: float(v) for n, v in zip(ds.param_names, ds.params[s])}))
         if save_fields and k < save_fields:
             # take the voxel indices from the pore list, NOT from trunk columns
@@ -189,63 +188,52 @@ def time_fig(ds, model, device, k0, args, tag):
         pred.append(scatter_to_volume(p, pts, ds.shape))
 
     s = int(ds.indices[k0])
-    params, pnames, species = ds.params[s], ds.param_names, ds.species
+    params, pnames, species = ds.params[s], ds.param_names, ds.target_species
     material = ds.h["geom/material"][int(ds.geom_index[s])]
     ts = ds.t_norm[s]
     rb_t, ra_t = zip(*[make_figures.reaction_rates(v, species, params, pnames) for v in truth])
     rb_p, ra_p = zip(*[make_figures.reaction_rates(v, species, params, pnames) for v in pred])
-    # Label every row with the species that is actually in it.
-    #
-    # This used to show the first species as "Ac" and the LAST one as
-    # "BIOMASS Bio" whatever it really was. On a two-chemical dataset of
-    # (Ac, A) that labelled the acceptor as biomass -- a caption that is not
-    # merely untidy but wrong, and wrong in a way a reader has no way to
-    # detect from the figure.
+    # Label the row with the species that is actually in it, and with the role
+    # that name carries when it is one this project knows. Labelling by
+    # position was how the acceptor of an (Ac, A) dataset came to be captioned
+    # "BIOMASS Bio" -- not merely untidy but wrong, and wrong in a way a reader
+    # has no way to detect from the figure.
     ROLE = {"Ac": "DONOR", "A": "ACCEPTOR", "P": "PRODUCT", "Bio": "BIOMASS"}
     CMAP = {"Ac": "viridis", "A": "cividis", "P": "magma", "Bio": "BuPu"}
 
-    show = list(range(len(species)))
-    if len(show) > 3:                     # keep the figure readable
-        keep = [i for i, s in enumerate(species) if s in ("Ac", "A", "Bio")]
-        show = keep or show[:3]
-
-    rows = []
-    for i in show:
-        nm = species[i]
-        head = "%s  %s" % (ROLE.get(nm, "CHEMICAL"), nm)
-        cm = CMAP.get(nm, "viridis")
-        rows.append((head + "  truth", [v[i] for v in truth], cm))
-        rows.append((head + "  pred", [v[i] for v in pred], cm))
+    head = "%s  %s" % (ROLE.get(species, "CHEMICAL"), species)
+    cm = CMAP.get(species, "viridis")
+    rows = [(head + "  truth", list(truth), cm),
+            (head + "  pred", list(pred), cm)]
     rows += [("BIOTIC  R_bio  truth", list(rb_t), "YlGn"),
              ("BIOTIC  R_bio  pred", list(rb_p), "YlGn"),
              ("ABIOTIC  R_abio  truth", list(ra_t), "OrRd"),
              ("ABIOTIC  R_abio  pred", list(ra_p), "OrRd")]
     rows = [r for r in rows if all(a is not None for a in r[1])]
 
-    title = ("time evolution, held-out geometry   Pe=%.3g  Da_bio=%.3g  Da_abio=%.3g"
-             % tuple(float(params[i]) for i in range(3)))
+    title = ("time evolution, held-out geometry   %s   %s"
+             % (species, "  ".join(
+                 "%s=%.3g" % (n, float(v)) for n, v in zip(pnames, params)
+                 if str(n).lower() == "pe" or str(n).lower().startswith("da"))))
     _time_grid(material, rows, ts, os.path.join(args.out, "time_%s_2d.png" % tag), title)
 
     if not args.no_3d:
         pick = [0, nT // 2, nT - 1]
-        # The biotic rate needs Ac, A AND Bio. On a two-chemical dataset it
-        # cannot be computed, every panel is None, the renderer drops them all
-        # and writes NOTHING -- so ticking "3D renders" produced no 3D time
-        # figure and no explanation. Fall back to the donor itself, which
-        # exists in every dataset and is what a reader wants to see in 3D
-        # anyway, and say which one is being drawn.
+        # The biotic rate needs Ac, A AND Bio at once, which one model does not
+        # predict, so every rate panel is None, the renderer drops them all and
+        # writes NOTHING -- ticking "3D renders" then produced no 3D time
+        # figure and no explanation. Fall back to the predicted field itself,
+        # which is what a reader wants to see in 3D anyway, and say so.
         have_rate = all(a is not None for a in rb_t) and \
             all(a is not None for a in rb_p)
         if have_rate:
             src_t, src_p, what, cmap = rb_t, rb_p, "biotic rate", "YlGn"
         else:
-            i0 = species.index("Ac") if "Ac" in species else 0
-            src_t = [v[i0] for v in truth]
-            src_p = [v[i0] for v in pred]
-            what, cmap = species[i0], "viridis"
-            print("   (3D time figure shows %s: the biotic rate needs Ac, A and "
-                  "Bio together, and this dataset has %s.)"
-                  % (what, ", ".join(species)))
+            src_t, src_p = list(truth), list(pred)
+            what, cmap = species, "viridis"
+            print("   (3D time figure shows %s: the biotic rate needs Ac, A "
+                  "and Bio together, and one model predicts one field.)"
+                  % what)
         panels = []
         for j in pick:
             panels.append(("%s truth  t=%.2f" % (what, ts[j]), src_t[j], cmap))
@@ -309,23 +297,21 @@ def _physics_fig(material, velfield, truth, pred, species, params, param_names,
     lb = make_figures.shared_limits(Rb_t, Rb_p)
     la = make_figures.shared_limits(Ra_t, Ra_p)
 
-    title = ("held-out sample %d   t=%.2f   Pe=%.3g  Da_bio=%.3g  Da_abio=%.3g"
-             "   mean RMSE=%.4f"
-             % (meta["sample"], meta.get("t_norm", 1.0), _p(meta, "pe"),
-                _p(meta, "da_bio"), _p(meta, "da_abio"), meta["rmse_mean"]))
+    title = ("held-out sample %d   %s   t=%.2f   %s   RMSE=%.4f"
+             % (meta["sample"], species, meta.get("t_norm", 1.0),
+                _conditions(meta, param_names), meta["rmse_mean"]))
     # With neither rate available every panel below except FLOW is None, the
     # renderer drops them, and a figure billed as "the physics" becomes one
     # picture of the velocity field -- at the full cost of a 3D render. Show
-    # the species instead, which every dataset has, and say what happened.
+    # the predicted field instead, which is always there, and say what happened.
     bare = Rb_t is None and Ra_t is None
     if bare:
         _physics_fig._said = getattr(_physics_fig, "_said", False)
         if not _physics_fig._said:
-            print("   (no rate fields: the biotic rate needs Ac, A and Bio, "
-                  "the abiotic rate needs P, and this dataset has %s. The "
-                  "physics figures show the chemicals themselves instead; "
-                  "build a dataset with 4 chemicals to get the rates.)"
-                  % ", ".join(species))
+            print("   (no rate fields: the biotic rate needs Ac, A and Bio "
+                  "together and the abiotic rate needs P, while one model "
+                  "predicts one field, here %s. The physics figures show that "
+                  "field instead.)" % species)
             _physics_fig._said = True
 
     panels_2d = [("FLOW  |u|", umag, "cividis", None),
@@ -341,15 +327,13 @@ def _physics_fig(material, velfield, truth, pred, species, params, param_names,
                  ("ABIOTIC  R_abio  truth", Ra_t, "OrRd", la),
                  ("ABIOTIC  R_abio  predicted", Ra_p, "OrRd", la)]
     if bare:
-        # the chemicals themselves, truth against prediction, on a shared scale
-        for i, sp in enumerate(species):
-            ls = make_figures.shared_limits(truth[i], pred[i])
-            panels_2d.append((sp + "  truth", truth[i], "viridis", ls))
-            panels_2d.append((sp + "  predicted", pred[i], "viridis", ls))
-            panels_2d.append((sp + "  |error|", d(truth[i], pred[i]),
-                              "magma", None))
-            panels_3d.append((sp + "  truth", truth[i], "viridis", ls))
-            panels_3d.append((sp + "  predicted", pred[i], "viridis", ls))
+        # the field itself, truth against prediction, on a shared scale
+        ls = make_figures.shared_limits(truth, pred)
+        panels_2d.append((species + "  truth", truth, "viridis", ls))
+        panels_2d.append((species + "  predicted", pred, "viridis", ls))
+        panels_2d.append((species + "  |error|", d(truth, pred), "magma", None))
+        panels_3d.append((species + "  truth", truth, "viridis", ls))
+        panels_3d.append((species + "  predicted", pred, "viridis", ls))
     make_figures.render_2d(material, panels_2d, stem + "_2d.png", title + "   (mid-plane slice)")
     if do_3d:
         make_figures.render_3d(material, panels_3d, stem + "_3d.png",
@@ -365,25 +349,38 @@ def _p(meta, name, default=0.0):
     return default
 
 
+def _conditions(meta, param_names):
+    """The run's conditions as a caption, naming the columns the DATASET has.
+
+    A two-column dataset records (pe, da) and a six-column one records
+    (pe, da_bio, da_abio, ...). Hard-coding Da_bio and Da_abio printed
+    'Da_bio=0  Da_abio=0' on every figure from a two-column file.
+    """
+    out = []
+    for n in param_names:
+        n = str(n)
+        if n.lower() == "pe" or n.lower().startswith("da"):
+            out.append("%s=%.3g" % (n, float(_p(meta, n))))
+    return "  ".join(out)
+
+
 def _field_fig(truth, pred, species, meta, path):
+    """Truth, prediction and absolute error of the ONE predicted field."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    nz = truth.shape[3]; z = nz // 2
-    n = len(species)
-    fig, ax = plt.subplots(3, n, figsize=(3.6 * n, 9.2))
-    ax = np.atleast_2d(ax)
-    for i, sp in enumerate(species):
-        t, p = truth[i][:, :, z].T, pred[i][:, :, z].T
-        vmin, vmax = np.nanmin(t), np.nanmax(t)
-        for r, (img, lab, cm) in enumerate([(t, "ground truth", "viridis"),
-                                            (p, "prediction", "viridis"),
-                                            (np.abs(p - t), "|error|", "magma")]):
-            kw = dict(origin="lower", interpolation="nearest", cmap=cm)
-            if r < 2: kw.update(vmin=vmin, vmax=vmax)
-            im = ax[r, i].imshow(img, **kw)
-            fig.colorbar(im, ax=ax[r, i], fraction=.046)
-            ax[r, i].set_title("%s — %s" % (sp, lab), fontsize=10)
-            ax[r, i].set_xticks([]); ax[r, i].set_yticks([])
+    nz = truth.shape[2]; z = nz // 2
+    fig, ax = plt.subplots(1, 3, figsize=(10.8, 3.4))
+    t, p = truth[:, :, z].T, pred[:, :, z].T
+    vmin, vmax = np.nanmin(t), np.nanmax(t)
+    for c, (img, lab, cm) in enumerate([(t, "ground truth", "viridis"),
+                                        (p, "prediction", "viridis"),
+                                        (np.abs(p - t), "|error|", "magma")]):
+        kw = dict(origin="lower", interpolation="nearest", cmap=cm)
+        if c < 2: kw.update(vmin=vmin, vmax=vmax)
+        im = ax[c].imshow(img, **kw)
+        fig.colorbar(im, ax=ax[c], fraction=.046)
+        ax[c].set_title("%s, %s" % (species, lab), fontsize=10)
+        ax[c].set_xticks([]); ax[c].set_yticks([])
     fig.suptitle("held-out sample %d   t=%.2f   Pe=%.3g  Da_bio=%.3g  Da_abio=%.3g"
                  "   mean RMSE=%.4f"
                  % (meta["sample"], meta.get("t_norm", 1.0), _p(meta, "pe"),
@@ -441,9 +438,9 @@ def main():
         rows, t_inf, species = run_one(ck, args, device, tag,
                                        args.save_fields if len(models) == 1 else 0)
         all_rows += rows
-        arr = np.array([[r["rmse_" + s] for s in species] for r in rows])
-        r2 = np.array([[r["r2_" + s] for s in species] for r in rows])
-        n_undef = int(np.isnan(r2).any(axis=1).sum())
+        arr = np.array([r["rmse"] for r in rows])          # one per snapshot
+        r2 = np.array([r["r2"] for r in rows])
+        n_undef = int(np.isnan(r2).sum())
         if n_undef:
             print("   (R2 undefined on %d of %d snapshots -- the truth is "
                   "constant there, usually t = 0 before anything has entered. "
@@ -452,40 +449,37 @@ def main():
 
         # TWO DIFFERENT AVERAGES, BOTH REPORTED, BECAUSE THEY DIFFER.
         #
-        # rmse_per_species is the mean of the per-snapshot RMSEs. train.py
-        # instead pools every point of every snapshot and takes one square root
-        # at the end. Square root is concave, so the mean of the roots is
-        # always the SMALLER of the two -- measured here, 0.0476 against
-        # 0.0538 for the same weights on the same data. Neither is wrong, but
-        # quoting one number in training and a different one in evaluation,
-        # both called "held-out RMSE", invites exactly the confusion it caused.
-        pooled = np.sqrt((arr ** 2).mean(0))
+        # rmse_mean is the mean of the per-snapshot RMSEs. train.py instead
+        # pools every point of every snapshot and takes one square root at the
+        # end. Square root is concave, so the mean of the roots is always the
+        # SMALLER of the two -- measured here, 0.0476 against 0.0538 for the
+        # same weights on the same data. Neither is wrong, but quoting one
+        # number in training and a different one in evaluation, both called
+        # "held-out RMSE", invites exactly the confusion it caused.
+        pooled = float(np.sqrt((arr ** 2).mean()))
         with np.errstate(invalid="ignore"):
-            r2_mean = np.nanmean(r2, axis=0)
+            r2_mean = float(np.nanmean(r2)) if np.isfinite(r2).any() \
+                else float("nan")
         summary[tag] = dict(checkpoint=ck, n_samples=len(rows),
-                            rmse_per_species=dict(zip(species, arr.mean(0).round(5).tolist())),
-                            rmse_pooled_per_species=dict(
-                                zip(species, pooled.round(5).tolist())),
-                            rmse_pooled_mean=float(pooled.mean()),
-                            r2_per_species=dict(zip(species, np.round(r2_mean, 4).tolist())),
+                            species=species,
+                            rmse=round(float(arr.mean()), 5),
+                            rmse_pooled=round(pooled, 5),
+                            r2=round(r2_mean, 4) if r2_mean == r2_mean else None,
                             r2_snapshots_undefined=n_undef,
                             rmse_mean=float(arr.mean()),
+                            rmse_pooled_mean=pooled,
                             inference_seconds_total=t_inf,
                             inference_seconds_per_sample=t_inf / max(len(rows), 1),
                             speedup_vs_simulation=args.sim_seconds / (t_inf / max(len(rows), 1)))
-        print("%-12s mean RMSE %.4f   per species %s   %.3f s/sample   speedup %.0fx"
-              % (tag, arr.mean(),
-                 " ".join("%s=%.4f" % (s, v) for s, v in zip(species, arr.mean(0))),
+        print("%-12s %-6s mean RMSE %.4f   %.3f s/sample   speedup %.0fx"
+              % (tag, species, arr.mean(),
                  t_inf / max(len(rows), 1),
                  args.sim_seconds / (t_inf / max(len(rows), 1))))
         print("             (that is the mean of the per-snapshot RMSEs. "
               "Pooled over every point at once it is %.4f, which is the "
-              "number train.py prints.)" % pooled.mean())
-        good = ~np.isnan(r2_mean)
-        if good.any():
-            print("             R2 %s"
-                  % " ".join("%s=%.4f" % (s, v) for s, v, g
-                             in zip(species, r2_mean, good) if g))
+              "number train.py prints.)" % pooled)
+        if r2_mean == r2_mean:
+            print("             R2 %.4f" % r2_mean)
         print("             speedup is against an assumed %.0f s per %s "
               "simulation%s. Measure your own and pass --sim-seconds before "
               "quoting it." % (args.sim_seconds, "3D" if _nz > 1 else "2D",
@@ -504,10 +498,17 @@ def main():
         tag0 = models[0][0]
         r0 = [r for r in all_rows if r["tag"] == tag0]
         fig, ax = plt.subplots(1, 3, figsize=(13, 3.9))
-        pcols = [c for c in keys if c.lower() in ("pe", "da_bio", "da_abio")][:3]
-        for i, p in enumerate(pcols):
-            ax[i].scatter([r[p] for r in r0], [r["rmse_mean"] for r in r0], s=26, alpha=.75)
-            ax[i].set_xscale("log"); ax[i].set_xlabel(p); ax[i].set_ylabel("mean RMSE")
+        # the dimensionless columns this dataset actually has: (pe, da) for
+        # the default layout, (pe, da_bio, da_abio) for the full one
+        pcols = [c for c in keys
+                 if c.lower() == "pe" or c.lower().startswith("da")][:3]
+        for i in range(3):
+            if i >= len(pcols):
+                ax[i].axis("off")       # a blank frame explains nothing
+                continue
+            pc = pcols[i]
+            ax[i].scatter([r[pc] for r in r0], [r["rmse_mean"] for r in r0], s=26, alpha=.75)
+            ax[i].set_xscale("log"); ax[i].set_xlabel(pc); ax[i].set_ylabel("mean RMSE")
             ax[i].axhline(0.04, ls="--", c="crimson", lw=1, label="2D paper bar 0.04")
             ax[i].legend(fontsize=8)
         fig.suptitle("held-out RMSE against the dimensionless groups (%s)" % tag0)

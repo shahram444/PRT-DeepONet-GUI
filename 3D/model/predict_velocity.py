@@ -1,35 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/models/PRT-DeepONet_Velocity_load.ipynb, code cells 7 and 8
-#     (their predict_velocity() helper)
-#
-#   WHAT THEIR 2D CODE DOES
-#     Loads the released weights, rebuilds the features for one bundled
-#     example domain using constants written into the notebook, runs the
-#     network for three Reynolds conditions, and draws a quiver plot.
-#
-#   WHAT WE CHANGED, AND WHY
-#     1. THE SCALING TRAVELS WITH THE WEIGHTS. Their constants live in the
-#        notebook; ours live in the checkpoint and are reapplied here. The
-#        commonest way a surrogate produces confident nonsense is being handed
-#        inputs scaled differently from the ones it trained on, and the only
-#        defence is that the scaling cannot be separated from the model. A
-#        bare state_dict is REFUSED for exactly this reason.
-#     2. IT RUNS OVER A WHOLE DATASET. --data with --write-back stores the
-#        fields as samples/velocity_pred, BESIDE samples/velocity and never
-#        over it, so the predicted and the simulated field can be compared.
-#        That is the second half of their two-stage pipeline, which their
-#        notebook does one domain at a time.
-#     3. IT REPORTS THE DIVERGENCE RESIDUAL. The field is divergence
-#        PENALISED, not divergence free. Printing how far short it fell makes
-#        that visible instead of assumed, which matters before upscaling.
-#     4. IT REFUSES A GRID MISMATCH WITH THE REASON. The branch's fully
-#        connected layer is tied to the grid it was trained on.
-# =============================================================================
 """Run a trained velocity operator on a geometry, with no simulation.
 
 Two ways in.
@@ -93,8 +62,6 @@ from harmonic_pressure import harmonic_gradient
 
 
 def load_checkpoint(path, device="cpu"):
-    # weights_only=False on purpose: the checkpoint carries the grid, the
-    # scaling and the held-out list beside the tensors, and all of it is needed.
     ck = torch.load(path, map_location=device, weights_only=False)
     if "model" not in ck or "stats" not in ck:
         raise SystemExit(
@@ -123,7 +90,6 @@ def features_for(pore, ck, device="cpu", unet=None):
     f = ff.all_features(pore, buf=int(ck.get("buffer", 10)))
     b1 = np.empty((1, 3) + grid, np.float32)
     b1[0, 0] = pore.astype(np.float32)
-    # UPRM before MIS. Channel order is theirs and is baked into the weights.
     b1[0, 1] = (f["uprm"] - st["uprm_mu"]) / st["uprm_sd"]
     b1[0, 2] = (f["mis"] - st["mis_mu"]) / st["mis_sd"]
 
@@ -131,13 +97,8 @@ def features_for(pore, ck, device="cpu", unet=None):
     e2 = e * e
     dw2 = np.zeros(grid, np.float32)
     lo, hi = float(st["dw2_min"]), float(st["dw2_max"])
-    # Clipped, not rescaled: a rock wider than anything in training saturates
-    # at 1 rather than shifting every other voxel's value.
     dw2[pore] = np.clip((e2[pore] - lo) / max(hi - lo, 1e-12), 0, 1)
 
-    # The pressure prior must be produced the SAME way it was at training time.
-    # The checkpoint records which, so a model trained against an exact solve
-    # cannot be run against a U-Net approximation without anyone noticing.
     mode = ck.get("pressure", "solve")
     if mode == "none":
         grads = np.zeros((ndim,) + grid, np.float32)
@@ -156,8 +117,6 @@ def features_for(pore, ck, device="cpu", unet=None):
         grads = harmonic_gradient(pore)
 
     Lp = int(np.prod(grid))
-    # Coordinates normalised to [0, 1] per axis, so the trunk sees the same
-    # numbers whatever the grid size.
     coords = np.stack(np.meshgrid(*[np.arange(g, dtype=np.float32) / max(g - 1, 1)
                                     for g in grid], indexing="ij"), axis=-1).reshape(Lp, ndim)
     tr = np.empty((1, Lp, ndim + ndim + 1), np.float32)
@@ -172,13 +131,7 @@ def features_for(pore, ck, device="cpu", unet=None):
 def predict(model, ck, pore, condition, device="cpu", unet=None):
     """Physical velocity for one geometry at one flow condition."""
     st = ck["stats"]
-    # The features are rebuilt from the CHECKPOINT, not from anything typed on
-    # the command line: same buffer, same scaling, same pressure prior. Nothing
-    # about the inputs is left to be remembered correctly by the user.
     b1, tr, _ = features_for(pore, ck, device, unet)
-    # Scaled with the TRAINING statistics carried in the checkpoint, never with
-    # anything measured here. A field predicted at a different scaling from the
-    # one the weights were fitted at is wrong in a way that looks plausible.
     b2 = np.array([[(float(condition) - st["cond_mu"]) / st["cond_sd"]]], np.float32)
     out = model(torch.from_numpy(b1).to(device),
                 torch.from_numpy(b2).to(device),
@@ -186,11 +139,8 @@ def predict(model, ck, pore, condition, device="cpu", unet=None):
     mu = np.asarray(st["vel_mu"], np.float32)
     sd = np.asarray(st["vel_sd"], np.float32)
     n = out.shape[-1]
-    # Back to PHYSICAL units. The network works in standardised ones, and every
-    # consumer downstream, the divergence residual included, expects lattice
-    # velocity.
     vel = np.stack([out[..., c] * sd[c] + mu[c] for c in range(n)])
-    vel[:, ~pore] = 0.0                  # a grain carries no velocity
+    vel[:, ~pore] = 0.0
     return vel.astype(np.float32)
 
 
@@ -202,14 +152,8 @@ def divergence_residual(vel, pore):
     reaching it, and this says how far short it fell.
     """
     ndim = vel.shape[0]
-    # float64 here even though the field is float32. This is a sum of small
-    # signed differences that very nearly cancel, which is exactly the case
-    # where single precision loses the answer in the rounding.
     div = np.zeros(vel.shape[1:], np.float64)
     for ax in range(ndim):
-        # An axis under three voxels has no centre to difference about. Skipping
-        # it is right for a thin slab; differencing it would read the array's
-        # own edges as a gradient.
         if vel.shape[1 + ax] < 3:
             continue
         sl_c = [slice(None)] * ndim
@@ -224,13 +168,8 @@ def divergence_residual(vel, pore):
     inner = interior_pore_mask(pore)
     speed = np.sqrt((vel ** 2).sum(0))
     scale = speed[pore].mean() if pore.any() else 1.0
-    # NaN, not zero. A rock with no interior, or a field that is zero
-    # everywhere, has no divergence residual to report, and returning 0.0 would
-    # read as a perfectly divergence free field.
     if not inner.any() or scale <= 0:
         return float("nan")
-    # Divided by the mean speed, so the number is dimensionless and means the
-    # same thing at every flow rate.
     return float(np.abs(div[inner]).mean() / scale)
 
 

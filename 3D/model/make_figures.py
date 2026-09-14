@@ -42,13 +42,6 @@ def _resolve_params(param_names, params):
     return out
 
 
-# =============================================================================
-#  BLOCK 1.  WHAT TO DRAW
-#
-#  The rates are RECOMPUTED from the concentrations and the run's own
-#  parameters, not read from the file, so a figure can be made for a PREDICTED
-#  field where no solver ever wrote a rate.
-# =============================================================================
 def reaction_rates(conc, species, params, param_names):
     """Turn predicted concentrations into the reaction-rate fields.
 
@@ -61,10 +54,19 @@ def reaction_rates(conc, species, params, param_names):
     Written in the dimensionless groups the model was conditioned on, so the
     magnitudes are comparable across runs. Returns (R_bio, R_abio), both NaN
     outside the pore space, exactly like the concentration fields.
+
+    `conc` is ONE field and `species` its name, because the model predicts one
+    field. The biotic rate needs Ac, A and Bio at once and is therefore never
+    available from a single field; the abiotic rate is, when the field is P.
+    A caller with several fields of the same run, each from its own model, can
+    pass them as a dict of name to volume.
     """
     p = _resolve_params(param_names, params)
-    idx = {s: i for i, s in enumerate(species)}
-    g = lambda k: conc[idx[k]] if k in idx else None
+    if isinstance(conc, dict):
+        fields = dict(conc)
+    else:
+        fields = {str(species): np.asarray(conc, np.float32)}
+    g = fields.get
 
     Ac, A, P, Bio = g("Ac"), g("A"), g("P"), g("Bio")
     R_bio = R_abio = None
@@ -78,8 +80,6 @@ def reaction_rates(conc, species, params, param_names):
     return R_bio, R_abio
 
 
-# The speed, not a component. A single component is signed and its sign is an
-# artefact of which way the axis points.
 def velocity_magnitude(vel):
     return None if vel is None else np.sqrt((np.asarray(vel, np.float32) ** 2).sum(0))
 
@@ -101,13 +101,6 @@ def _norm(panels):
     return out
 
 
-# =============================================================================
-#  BLOCK 2.  SCALING, SHARED
-#
-#  Panels that are meant to be compared get ONE colour scale. Per-panel limits
-#  make two very different fields look alike, which is the commonest way a
-#  figure of this kind misleads.
-# =============================================================================
 def shared_limits(*arrays):
     """(vmin, vmax) over every finite value in the given arrays."""
     vals = [np.asarray(a)[np.isfinite(a)] for a in arrays if a is not None]
@@ -118,8 +111,6 @@ def shared_limits(*arrays):
     return float(v.min()), float(v.max())
 
 
-# Defaults to the MIDDLE slice, not slice 0. Slice 0 is the inlet face, which
-# is open padding in most of these domains and shows nothing.
 def render_2d(material, panels, path, title, slice_axis=2, slice_index=None):
     """panels: list of (name, 3D array, cmap[, (vmin, vmax)]). Mid-plane slices."""
     import matplotlib; matplotlib.use("Agg")
@@ -174,14 +165,6 @@ def _grain_surface(ax, solid, color="#8d949d", alpha=0.30, offset=0):
         pass
 
 
-# =============================================================================
-#  BLOCK 3.  THREE DIMENSIONS
-#
-#  A scatter of pore voxels, thinned to max_points, with the grains drawn as a
-#  marching-cubes surface. Thinned because matplotlib will not draw a quarter of
-#  a million points at any useful speed, and the thinning is uniform so the
-#  picture stays representative.
-# =============================================================================
 def render_3d(material, panels, path, title, max_points=14000, cut=True, trim=3):
     """One 3D panel per field: grains translucent, field as a coloured point
     cloud through the half-cut pore space.
@@ -250,24 +233,28 @@ def render_3d(material, panels, path, title, max_points=14000, cut=True, trim=3)
 
 
 def standard_panels(conc, species, vel, params, param_names):
-    """The panel set used everywhere: flow, the two rate fields, then species."""
+    """The panel set used everywhere: flow, the two rate fields, then the field.
+
+    `conc` is the ONE predicted volume and `species` its name.
+    """
     umag = velocity_magnitude(vel)
     R_bio, R_abio = reaction_rates(conc, species, params, param_names)
     panels = [("FLOW  |u|", umag, "cividis"),
               ("BIOTIC  R_bio", R_bio, "YlGn"),
-              ("ABIOTIC  R_abio", R_abio, "OrRd")]
-    panels += [(s, conc[i], "viridis") for i, s in enumerate(species)]
-    # R_bio needs Ac, A and Bio; R_abio needs P. On a two-chemical dataset both
-    # are None, the renderer drops them, and what was billed as a physics
-    # figure quietly becomes a single picture of the flow field -- at the full
-    # cost of a 3D render. Say so once, where it can be acted on.
+              ("ABIOTIC  R_abio", R_abio, "OrRd"),
+              (str(species), np.asarray(conc, np.float32), "viridis")]
+    # R_bio needs Ac, A and Bio at once, which one model cannot give; R_abio
+    # needs P. When neither is available the renderer drops those panels, and
+    # what was billed as a physics figure quietly becomes a single picture of
+    # the flow field -- at the full cost of a 3D render. Say so, once, where it
+    # can be acted on.
     if R_bio is None or R_abio is None:
         missing = []
         if R_bio is None:
-            missing.append("the biotic rate needs Ac, A and Bio")
+            missing.append("the biotic rate needs Ac, A and Bio together, "
+                           "which one model does not predict")
         if R_abio is None:
             missing.append("the abiotic rate needs P")
-        print("   (rate fields not drawn: %s, and this dataset has %s. Build "
-              "one with --n-species 4 to get them.)"
-              % ("; ".join(missing), ", ".join(species)))
+        print("   (rate fields not drawn: %s, and this model predicts %s.)"
+              % ("; ".join(missing), species))
     return panels, R_bio, R_abio

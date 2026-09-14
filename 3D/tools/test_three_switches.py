@@ -15,8 +15,11 @@ default path, this test fails.
 The remaining tests exercise each switch combination through the dataset and
 through a real forward and backward pass of the model.
 
-    python test_three_switches.py --data /tmp/test3d.h5
-    python build_practice_dataset.py --out /tmp/test3d.h5   # to build the input first
+    python test_three_switches.py
+
+It needs a small dataset to test against, and builds one itself the first time,
+in the system temporary folder, in about half a minute.  Later runs reuse it.
+Point it somewhere else with --data PATH if you would rather supply your own.
 """
 
 import argparse, os, sys
@@ -33,13 +36,6 @@ PORE = 2
 FAIL = []
 
 
-# =============================================================================
-#  BLOCK 1.  REPORTING
-#
-#  Every check prints its own line whether it passes or fails, and the failures
-#  are collected for the exit code. A test that only speaks up when something is
-#  wrong gives you no way to tell "all fine" from "never ran".
-# =============================================================================
 def check(name, cond, detail=""):
     print("  %-58s %s %s" % (name, "PASS" if cond else "FAIL", detail))
     if not cond:
@@ -48,7 +44,8 @@ def check(name, cond, detail=""):
 
 
 # ---------------------------------------------------------------------------
-def original_getitem(h5path, s, t, distance, with_velocity, with_time, n_points, seed):
+def original_getitem(h5path, s, t, distance, with_velocity, with_time, n_points,
+                     seed, species_index=0):
     """The pre-switch implementation, copied verbatim from git history.
 
     Kept deliberately ugly and duplicated: the whole value of this function is
@@ -88,20 +85,13 @@ def original_getitem(h5path, s, t, distance, with_velocity, with_time, n_points,
             cols.append(h["geom/edt"][g][xi, yi, zi] / max(nx - 1, 1))
         trunk = np.stack([np.asarray(c, np.float32) for c in cols], 1)
 
-        conc = h["samples/conc"][s, t].astype(np.float32)
-        target = (conc[:, xi, yi, zi].T / conc_scale[None, :])
+        c = int(species_index)
+        conc = h["samples/conc"][s, t, c].astype(np.float32)
+        target = conc[xi, yi, zi] / conc_scale[c]
     return branch1, branch2, trunk, target.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
-# =============================================================================
-#  BLOCK 2.  THE CHECK THIS FILE EXISTS FOR
-#
-#  Every combination of distance and velocity, compared against the verbatim
-#  copy above, sample by sample and value by value. Not "close": IDENTICAL.
-#  Anything less would let a rounding change pass as a match, and the promise
-#  being kept here is that a v1.1 result reproduces exactly in v1.2.
-# =============================================================================
 def test_off_is_unchanged(path):
     print("\n[1] ALL SWITCHES OFF reproduces the original code exactly")
     for distance in ("gdf", "edt", "none"):
@@ -137,18 +127,11 @@ def test_off_is_unchanged(path):
     c = resolve_switches(with_velocity=True)
     check("resolver OFF +velocity branch == 4 channels", c["in_channels"] == 4)
     c = resolve_switches(distance="none")
-    check("resolver OFF distance=none disables FiLM",
-          c["film"] is False and c["trunk_dim"] == 4)
+    check("resolver OFF distance=none drops the geometry column",
+          c["geom_col"] is False and c["trunk_dim"] == 4)
 
 
 # ---------------------------------------------------------------------------
-# =============================================================================
-#  BLOCK 3.  THE SWITCHES ON
-#
-#  Shapes first, then values, then a real forward and backward pass. Shapes
-#  alone are not enough: a tensor of the right size full of NaN passes every
-#  shape assertion ever written.
-# =============================================================================
 def test_switch_shapes(path):
     print("\n[2] every switch combination builds the right shapes")
     cases = [
@@ -213,9 +196,8 @@ def test_model_roundtrip(path):
     for name, kw in cases:
         ds = PRT3DDataset(path, n_points=512, **kw)
         m = PRT_DeepONet3D(in_channels=ds.in_channels, n_params=len(ds.param_names),
-                           n_species=ds.C, trunk_in_dim=ds.trunk_dim,
-                           grid=ds.shape, cnn_blocks=3,
-                           inject_every=3 if ds.cfg["film"] else 0)
+                           trunk_in_dim=ds.trunk_dim,
+                           grid=ds.shape, cnn_blocks=3)
         b1, b2, tk, y = (x[None] for x in ds[0])
         p = m(b1, b2, tk)
         loss = torch.nn.functional.huber_loss(p, y)
@@ -238,15 +220,71 @@ def test_source_tag(path):
           "%d train / %d test samples" % (len(tr), len(te)))
 
 
-# =============================================================================
-#  BLOCK 4.  RUNNING THEM
-# =============================================================================
+# ---------------------------------------------------------------------------
+def test_species_selection(path):
+    print("\n[6] the model predicts ONE species, and --species picks it")
+    a = PRT3DDataset(path, n_points=256)
+    check("default is the first species in the file",
+          a.target_species == a.species[0], a.target_species)
+    y = a[0][3]
+    check("target has no species axis", tuple(y.shape) == (256,), tuple(y.shape))
+    if len(a.species) > 1:
+        b = PRT3DDataset(path, n_points=256, species=a.species[1], seed=0)
+        c0 = PRT3DDataset(path, n_points=256, seed=0)
+        # snapshot 0 is the field before anything has entered, where every
+        # species is the same constant, so look for a snapshot that differs
+        diff = max(float(np.abs(np.sort(b[k][3].numpy())
+                                - np.sort(c0[k][3].numpy())).max())
+                   for k in range(len(a)))
+        check("--species selects a different field",
+              b.target_species == a.species[1] and diff > 1e-6,
+              "max|dy| %.3e" % diff)
+    try:
+        PRT3DDataset(path, n_points=64, species="not_a_chemical")
+        check("an unknown species is rejected", False)
+    except ValueError:
+        check("an unknown species is rejected", True)
+
+
+def _default_data():
+    """Where the practice dataset lives, on this machine.
+
+    /tmp does not exist on Windows, so the default goes through tempfile
+    rather than being written into the repository.
+    """
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "prt_test3d.h5")
+
+
+def _build(path):
+    """Build the practice dataset ourselves rather than asking for it.
+
+    The test used to stop with an instruction to go and run
+    build_practice_dataset.py first, which meant it failed on any fresh
+    checkout and in every automated run.  Building it here takes a few seconds
+    and is the same call the instruction asked for.
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "build_practice_dataset.py")
+    print("no dataset at %s, building one (a few seconds)" % path)
+    p = subprocess.run([sys.executable, script, "--out", path,
+                        "--n-geom", "3", "--n-sets", "2", "--n-times", "2",
+                        "--shape", "16", "16", "16", "--stokes-iters", "60"],
+                       capture_output=True, text=True)
+    if p.returncode != 0 or not os.path.exists(path):
+        print(((p.stdout or "") + (p.stderr or ""))[-2000:])
+        print("could not build the practice dataset; run it by hand:")
+        print("  python build_practice_dataset.py --out %s" % path)
+        return False
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="/tmp/test3d.h5")
+    ap.add_argument("--data", default=_default_data())
     a = ap.parse_args()
-    if not os.path.exists(a.data):
-        print("no test file; run:  python build_practice_dataset.py --out %s" % a.data)
+    if not os.path.exists(a.data) and not _build(a.data):
         return 2
     print("testing against %s" % a.data)
     test_off_is_unchanged(a.data)
@@ -254,6 +292,7 @@ def main():
     test_values_are_sane(a.data)
     test_model_roundtrip(a.data)
     test_source_tag(a.data)
+    test_species_selection(a.data)
     print("\n%s" % ("ALL TESTS PASSED" if not FAIL
                     else "FAILED: " + ", ".join(FAIL)))
     return 0 if not FAIL else 1

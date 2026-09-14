@@ -72,7 +72,9 @@ try:
 except ImportError:
     write_vti_and_png = None
 from settings_and_units import (add_settings_arguments,                  # noqa: E402
-                      settings_from_args)
+                      settings_from_args, add_param_layout_argument,
+                      param_layout_names, param_row,
+                      write_param_layout_attrs)
 
 
 # ===========================================================================
@@ -582,6 +584,7 @@ def main():
     ap.add_argument("--save-runs", type=int, default=4,
                     help="how many simulations to write pictures and VTI "
                          "for. Writing all of them is a lot of files.")
+    add_param_layout_argument(ap)
     add_settings_arguments(ap)
     a = ap.parse_args()
 
@@ -611,7 +614,9 @@ def main():
     species = a.species or chem.names[:a.n_species]
     a.n_species = len(species)
     chem = chem.truncate(a.n_species)
-    pnames = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
+    # Pe and Da by default, which is what the model's parameter branch takes;
+    # --params full keeps the six-column biotic plus abiotic vector.
+    pnames = param_layout_names(a.params)
     rng = np.random.default_rng(a.seed)
 
     # How many simulations this is, said before any of them start. The two
@@ -811,8 +816,9 @@ def main():
             # ones its training data had been made with. Constant columns, so
             # nothing learned from them -- but a dataset that misreports its own
             # conditions is not one to hand anybody else.
-            par[k] = [pe, da, da2, chem.ks_donor, chem.ks_acceptor,
-                      chem.yield_]
+            par[k] = param_row(a.params, pe, da, da2, chem.ks_donor,
+                               chem.ks_acceptor, chem.yield_,
+                               biotic=bool(cfg.biotic_enabled))
             vel[k] = vels[i][:, :, :, None]
             nfo = {}
             beat = prog.start(i, pe, da, da2)
@@ -891,6 +897,7 @@ def main():
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["species"] = np.array([s.encode() for s in species])
         h.attrs["param_names"] = np.array([s.encode() for s in pnames])
+        write_param_layout_attrs(h, a.params, bool(cfg.biotic_enabled))
         h.attrs["dimension"] = 2
         h.attrs["source"] = (b"jung_domains" if a.jung_dir else b"generated")
         # The whole settings file, stored inside the dataset. A dataset that

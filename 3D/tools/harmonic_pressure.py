@@ -1,33 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# CHANGED FROM THE 2D VERSION
-#
-#   WHERE IT CAME FROM
-#     Nothing here is a port. This REPLACES a piece of their pipeline.
-#     github.com/hjunglab/PRT-DeepONet   branch/folder: velocity-informed
-#     flow/parameters/Pressure_component_UNet.pt   (2.4 M parameters)
-#     flow/models/PRT-DeepONet_Velocity_load.ipynb, code cell 4
-#
-#   WHAT THEIR 2D CODE DOES
-#     Trains a U-Net to PREDICT the harmonic pressure gradient from the pore
-#     mask, so the velocity operator's trunk can be fed in one forward pass.
-#
-#   WHAT WE CHANGED, AND WHY
-#     We solve Laplace's equation directly instead, with a sparse linear
-#     solve. On their 148 x 64 grid that takes about 0.1 s, which is FASTER
-#     than their network and exact rather than approximate. A network is a
-#     strange way to approximate something you can solve.
-#
-#     The U-Net is still available and still theirs: velocity_model.py holds
-#     the same architecture and loads their weights. Use it when the solve
-#     stops being cheap. Measured on this code, one CPU core, porosity 0.5:
-#
-#         2D 148 x 64      0.10 s per rock      solve is the right choice
-#         3D 64 x 64 x 64  45.8 s per rock      the U-Net earns its keep
-#
-#     train_velocity.py --pressure {solve,unet,none} picks between them, and
-#     'none' is the ablation that says what the prior was worth at all.
-# =============================================================================
 """The harmonic pressure field on a pore space, and its gradient.
 
 The velocity operator's trunk is given the direction and relative strength of the
@@ -135,15 +106,6 @@ def harmonic_pressure(pore, report=False):
             s[ax] = d
             steps.append(tuple(s))
 
-    # -------------------------------------------------------------------------
-    # BLOCK 2.  Assemble the linear system, one row per live pore voxel.
-    # Inlet and outlet rows are Dirichlet: a single 1 on the diagonal and the
-    # boundary value on the right-hand side. Interior rows are the standard
-    # 5-point (2D) or 7-point (3D) Laplacian. A neighbour that is solid is
-    # simply LEFT OUT of the row, and the diagonal counts only the neighbours
-    # that were included. That omission IS the no-flux condition: it is what
-    # a mirrored ghost cell reduces to, without allocating one.
-    # -------------------------------------------------------------------------
     for k, cell in enumerate(cells):
         c = tuple(int(v) for v in cell)
         if c[0] == 0:
@@ -200,10 +162,6 @@ def harmonic_gradient(pore, normalise=True):
         out[ax][tuple(sl_c)] = (P[tuple(sl_p)] - P[tuple(sl_m)]) * 0.5
     out[:, ~pore] = 0.0
     if normalise:
-        # ABSOLUTE MAXIMUM scaling, not a z-score, and the difference matters.
-        # A z-score would shift the zero, and a zero gradient means "no driving
-        # force here", not "an average driving force here". Their notebook
-        # scales the same way, for the same reason.
         m = np.abs(out[:, pore]).max() if pore.any() else 0.0
         if m > 0:
             out /= m
