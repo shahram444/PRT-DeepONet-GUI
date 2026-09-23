@@ -2,6 +2,18 @@
 """
 check_everything.py — run every self-check in the project and report once.
 
+WHAT CHANGED FROM THE 2D VERSION
+    The 2D release has no self-checks. Its three notebooks are correct because
+    somebody read the figures they produced, which works for three notebooks and
+    one person and does not survive forty files across two dimensions.
+
+    Every check listed below is new, and most of them exist because something was
+    silently wrong first: a Damkohler that differed from the documented one by
+    exactly the Peclet number, a wall-normal gradient invented out of the zero
+    stored inside a grain, a button sending a flag its script had never had. This
+    file runs them all and reports once, so that "does the whole thing still
+    work" is one command rather than a list somebody has to remember.
+
     python check_everything.py
 
 WHAT IT RUNS, and what each one would catch
@@ -61,11 +73,19 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "3D", "tools")
+# The old checkout called this directory GeometryAware3D. Both names are tried
+# so that a working copy from before the rename still runs this file.
 if not os.path.isdir(TOOLS):
     TOOLS = os.path.join(os.path.dirname(HERE), "GeometryAware3D", "tools")
 MODEL = os.path.join(os.path.dirname(TOOLS), "model")
 GUI = os.path.join(HERE, "gui")
 
+# =============================================================================
+#  WHAT GETS RUN
+#  The list is explicit rather than discovered. A self-test that is found by
+#  walking the tree stops being run the moment somebody renames a file, and
+#  nothing says so; a name written down here fails loudly instead.
+# =============================================================================
 CHECKS = [
     ("the 2D simulator", [sys.executable, os.path.join(TOOLS, "prtlb_2d.py")]),
     ("the 3D simulator", [sys.executable, os.path.join(TOOLS, "prtlb_3d.py")]),
@@ -87,19 +107,28 @@ CHECKS = [
 ]
 
 
+# =============================================================================
+#  READING THE RESULT
+#  Each script states its own verdict in words. This looks for that sentence
+#  rather than taking the last line, because several of them end on a numpy
+#  warning and reporting that as the outcome reads like a failure when nothing
+#  failed.
+# =============================================================================
 def _verdict(out):
     """The line that states the outcome, not merely the last line printed.
 
     Several of these scripts end on a numpy warning, and showing that as the
     result reads like a failure when nothing failed.
     """
+    # Searched from the END backwards: a script that prints a summary prints it
+    # last, and an early line matching one of these words is usually a heading.
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     for ln in reversed(lines):
         low = ln.lower()
         if any(w in low for w in ("passed", "failed", "ok.", "accepts",
                                   "checks,")):
             return ln
-    return lines[-1] if lines else ""
+    return lines[-1] if lines else ""     # nothing printed at all: say nothing
 
 
 def _python_with_tkinter():
@@ -110,6 +139,8 @@ def _python_with_tkinter():
     usable one is sitting right there would hide a real failure.
     """
     import shutil
+    # This interpreter first, then the usual names on PATH. Trying this one
+    # first means a machine where everything lives in one place answers at once.
     cands = [sys.executable] + [shutil.which(n) for n in
                                 ("python3.13", "python3.12", "python3.11",
                                  "python3.10", "python3")]

@@ -44,6 +44,11 @@ import numpy as np                                              # noqa: E402
 import synthetic                                                # noqa: E402
 
 
+# =============================================================================
+#  RUNNING ONE
+#  Output is captured and shown only on failure, because a passing suite that
+#  prints three training logs is a suite nobody reads the output of.
+# =============================================================================
 def run(cmd, cwd=None):
     """Run a script and return (returncode, combined output)."""
     p = subprocess.run([sys.executable] + cmd, capture_output=True, text=True,
@@ -51,6 +56,12 @@ def run(cmd, cwd=None):
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+# =============================================================================
+#  THE SCRIPTS, AS SCRIPTS
+#  Run as subprocesses, with their real command lines, rather than by importing
+#  their functions. That is the point: the failures this catches are argument
+#  and file-layout failures, and importing a function steps straight past both.
+# =============================================================================
 class Pipeline(unittest.TestCase):
 
     @classmethod
@@ -76,6 +87,7 @@ class Pipeline(unittest.TestCase):
             [os.path.join(MODEL, "predict.py"),
              "--checkpoint", cls.ckpt, "--geometry", cls.geom,
              "--nx", str(cls.n), "--ny", str(cls.n), "--nz", str(cls.n),
+             # a raw .dat needs its grid given, which is the route this covers
              "--pe", "10", "--da-bio", "1", "--da-abio", "1",
              "--out", cls.pred_out])
 
@@ -86,7 +98,7 @@ class Pipeline(unittest.TestCase):
         for f in ("metrics.json", "rmse_table.csv"):
             self.assertTrue(os.path.exists(os.path.join(self.eval_out, f)),
                             "evaluate.py must write %s" % f)
-        pngs = [f for f in os.listdir(self.eval_out) if f.endswith(".png")]
+        pngs = [f for f in os.listdir(self.eval_out) if f.endswith(".png")]  # any figure
         self.assertTrue(pngs, "evaluate.py must write figures")
         for f in os.listdir(self.eval_out):
             self.assertNotIn("_sp0", f, "no per-species index in file names")
@@ -95,6 +107,8 @@ class Pipeline(unittest.TestCase):
     def test_evaluate_metrics(self):
         with open(os.path.join(self.eval_out, "metrics.json")) as fh:
             m = json.load(fh)
+        # Searched as text rather than by key, so that reorganising the metrics
+        # file does not break a test that is about what it says, not its shape.
         blob = json.dumps(m)
         self.assertIn("Ac", blob, "the metrics must name the species scored")
         for key in ("rmse", "RMSE"):
@@ -105,6 +119,12 @@ class Pipeline(unittest.TestCase):
         self.assertNotIn("NaN", blob)
         self.assertNotIn("Infinity", blob)
 
+    # -------------------------------------------------------------------
+    #  PREDICTION
+    #  A single field out, and file names with no per-species index in them.
+    #  The model has one output, so a name like C0_pred.vti is a sign the
+    #  multi-species head has come back somewhere upstream.
+    # -------------------------------------------------------------------
     def test_predict_runs(self):
         self.assertEqual(self.rc_pred, 0, self.out_pred[-3000:])
 

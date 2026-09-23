@@ -27,10 +27,17 @@ MODES = (("phi_mode", "phi_values", ("--phi-min", "--phi-max"), "--phi-values"),
          ("da_mode", "da_values", ("--da-min", "--da-max"), "--da-values"))
 
 
+# =============================================================================
+#  WHAT A MODE BOX IS
+#  Each of these pages offers two ways to give a range: a minimum and a maximum,
+#  or an explicit list. Exactly one set of flags must reach the command line.
+#  Both at once is the bug this file exists for, and it is invisible in the
+#  window because each box looks correct on its own.
+# =============================================================================
 def actions_with_modes(gui):
     out = []
     for key, act in sorted(gui.build_actions().items()):
-        keys = {f.key for f in act.fields}
+        keys = {f.key for f in act.fields}    # the box names this page offers
         if any(m[0] in keys for m in MODES):
             out.append((key, act))
     return out
@@ -40,6 +47,8 @@ def set_field(act, key, value):
     f = next((x for x in act.fields if x.key == key), None)
     if f is None:
         return False
+    # A field only makes its variable when its page is drawn, and no page is
+    # drawn here, so a stand-in with the same three methods is used instead.
     if getattr(f, "var", None) is None:
         f.var = type("V", (), {"_v": value,
                                "get": lambda s: s._v,
@@ -48,9 +57,15 @@ def set_field(act, key, value):
     return True
 
 
+# =============================================================================
+#  THE CHECK
+#  Every action, every mode, both pages: set the box, build the command, and
+#  require the other mode's flags to be absent. Absence is the assertion, which
+#  is why it has to be written down rather than noticed.
+# =============================================================================
 def main():
     gui = load_gui_module()
-    acts = actions_with_modes(gui)
+    acts = actions_with_modes(gui)       # discovered, so a new page is covered too
     if not acts:
         print("no page has a range-or-exact-numbers box; nothing to check")
         return 0

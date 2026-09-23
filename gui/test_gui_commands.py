@@ -3,6 +3,17 @@
 test_gui_commands.py — check that every button in the window emits a command
 line the script it calls will actually accept.
 
+WHAT CHANGED FROM THE 2D VERSION
+    There was no window in the 2D release, so there was nothing to test. There
+    was also nothing to get wrong: a notebook cell that calls a function with
+    the wrong argument fails in the cell, in front of the person who typed it.
+
+    A button is different. It builds a string, hands it to a subprocess, and
+    the mistake surfaces three seconds later as an argparse error in a log,
+    usually on a cluster, usually after a queue wait. This file closes that gap
+    by asking each script's own parser whether it would accept what the button
+    sends, which is the only check that cannot drift from the scripts.
+
 WHY THIS EXISTS
     Seven separate bugs in this window were all the same bug: the button sent
     a flag the script does not have, or omitted one it requires, or packed

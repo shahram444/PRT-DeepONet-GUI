@@ -59,8 +59,24 @@ PY = sys.executable
 
 INSTALL = "python gui/install_requirements.py"
 
+CORE = os.path.join(HERE, "prt_core")
+
 # name, group, command, what it protects, what to do when it fails
 CHECKS = [
+    ("the shared core", "model", [os.path.join(CORE, "test_core.py"), "--quiet"],
+     "the four things every script now imports instead of carrying its own "
+     "copy of: which chemistry a model is for, how the trunk's distance column "
+     "is scaled, one reader for every geometry format, and one definition of "
+     "the network in both key layouts. It also checks the claim that makes the "
+     "naming worth anything, that the convention called 'published' reproduces "
+     "the released notebook's own column voxel for voxel on the released rock",
+     "Read which of the four self-tests failed and run it on its own: "
+     "python prt_core/reactions.py --self-test, and the same for "
+     "conventions.py, inputs.py and model.py. If the crossing checks failed "
+     "instead, the four still agree with themselves and have stopped agreeing "
+     "with each other; the message names which pair. A failure here makes the "
+     "failures below it echoes, so fix this one first."),
+
     ("the network", "model", [os.path.join(TESTS, "test_model.py")],
      "the architecture staying the published 2D one: one output field, a "
      "scalar bias, no FiLM, the parameter branch honouring n_params, and a "
@@ -155,6 +171,18 @@ CHECKS = [
      "to the window without adding it to the script. Fix the side that is "
      "wrong, not the test."),
 
+    # AUDIT GUI-02. This test existed and was in no runner, which is how the
+    # panel it describes came to be missing from the window entirely.
+    ("the flow pipeline panel", "gui",
+     [os.path.join(GUI, "test_flow_panel.py")],
+     "the five steps of the flow capability: that they exist, that they are "
+     "filled in from one set of settings so they cannot disagree, and that the "
+     "sequence stops at the first failure instead of running a step against "
+     "something the failed one never wrote",
+     "The output names the check. A wiring failure means two steps disagree "
+     "about a path; a sequencing failure means a failed step did not stop the "
+     "rest. Fix the panel, not the test."),
+
     ("the sweep boxes", "gui",
      [os.path.join(GUI, "test_gui_sweep_modes.py")],
      "the range-or-list boxes, so neither half leaks the other half's flags "
@@ -238,11 +266,32 @@ def env_report():
     return lines, missing, absent
 
 
+# Directories the static check never descends into. Anything here is either
+# not ours (a virtual environment, an installed package, a vendored tree) or
+# not source (caches, build output). AUDIT TEST-RUNNER-03.
+# A check that fails, times out, or cannot be found at all. MISSING belongs
+# here: a configured check with no script behind it protects nothing.
+# AUDIT TEST-RUNNER-02.
+FAILING_STATUSES = ("FAILED", "TIMEOUT", "MISSING")
+
+SKIP_DIRS = frozenset((
+    "__pycache__", ".git", ".hg", ".svn", ".tox", ".mypy_cache", ".pytest_cache",
+    "venv", ".venv", "env", ".env", "site-packages", "dist-packages",
+    "node_modules", "build", "dist", ".eggs", "work", "runs",
+))
+
+
 def static_check():
     """Every .py parses.  In memory, so a read-only checkout still passes."""
     bad = []
+    # AUDIT TEST-RUNNER-03. The exclusion list held only __pycache__ and .git,
+    # so the walk descended into any virtual environment sitting in the
+    # checkout and tried to compile third-party source. A syntax error in
+    # somebody else's package is not a failure of this repository, and it is
+    # what made the last static check fail on PyTorch's own files.
     for root, dirs, files in os.walk(HERE):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                   and not d.endswith(".egg-info")]
         for f in sorted(files):
             if not f.endswith(".py"):
                 continue
@@ -353,7 +402,11 @@ def main():
             p = subprocess.run([PY] + cmd, capture_output=True, text=True,
                                cwd=HERE, timeout=a.timeout)
             out = (p.stdout or "") + (p.stderr or "")
-            status = "ok" if p.returncode == 0 else "FAILED"
+            # AUDIT TEST-01. Exit status 2 means a check could not run for
+            # want of a fixture. That is a skip, not a failure and not a pass,
+            # and the output says what to build.
+            status = ("ok" if p.returncode == 0
+                      else "skipped" if p.returncode == 2 else "FAILED")
             v = verdict(out)
         except subprocess.TimeoutExpired:
             out, status = "", "TIMEOUT"
@@ -392,7 +445,7 @@ def main():
     for _, g, status, *_ in rows:
         d = by_group.setdefault(g, {"ok": 0, "bad": 0, "other": 0})
         d["ok" if status == "ok" else
-          ("bad" if status in ("FAILED", "TIMEOUT") else "other")] += 1
+          ("bad" if status in FAILING_STATUSES else "other")] += 1
     say("BY GROUP")
     for g in GROUPS:
         if g in by_group:
@@ -401,7 +454,11 @@ def main():
                 % (g, d["ok"], d["bad"], d["other"]))
     say()
 
-    bad = [r for r in rows if r[2] in ("FAILED", "TIMEOUT")]
+    # AUDIT TEST-RUNNER-02. MISSING rows were created when a configured check
+    # had no script behind it, and then dropped from the failure set, so a
+    # test that had been deleted or renamed was reported and still counted as
+    # a clean run. A configured check that cannot be found is a failure.
+    bad = [r for r in rows if r[2] in FAILING_STATUSES]
     for i, (name, group, status, v, secs, out, protects, fix) in enumerate(bad, 1):
         say("=" * 78)
         say("FAILURE %d of %d: %s   [%s, %s]" % (i, len(bad), name, group,
@@ -419,7 +476,7 @@ def main():
             say("  | " + ln[:150])
         say()
 
-    skipped = [r for r in rows if r[2] in ("skipped", "MISSING")]
+    skipped = [r for r in rows if r[2] == "skipped"]
     say("=" * 78)
     if bad:
         say("VERDICT: %d of %d checks FAILED. Not ready to deploy."

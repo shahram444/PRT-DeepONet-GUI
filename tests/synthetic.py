@@ -33,6 +33,13 @@ PNAMES_PE_DA = ["pe", "da"]
 PNAMES_FULL = ["pe", "da_bio", "da_abio", "ks_ac_norm", "ks_a_norm", "y_norm"]
 
 
+# =============================================================================
+#  A ROCK THAT PERCOLATES, EVERY TIME
+#  A test fixture that sometimes seals its inlet turns a real failure into an
+#  intermittent one, which is the worst kind to chase. The geometry below is
+#  drawn from a fixed seed and the inlet and outlet faces are forced open, so
+#  the same call always gives the same connected rock.
+# =============================================================================
 def _geometry(n, seed):
     """A percolating pore space: a slab with a few spheres of solid in it."""
     rng = np.random.default_rng(seed)
@@ -72,6 +79,12 @@ def _fields(mat, n, n_t, n_c, seed):
     return conc, vel
 
 
+# =============================================================================
+#  A FILE IN THE PROJECT'S OWN LAYOUT
+#  Written by hand rather than by the real builders on purpose: a fixture built
+#  by the code under test cannot catch that code writing the wrong layout. Every
+#  group, name and attribute here is what dataset_reader.py expects to find.
+# =============================================================================
 def make_dataset(path, n=12, n_geom=2, n_sets=2, n_t=2, params="pe_da",
                  species=None, with_velocity=True, seed=0):
     """Write a dataset in the project's HDF5 layout.  Returns its path."""
@@ -135,6 +148,12 @@ def make_dataset(path, n=12, n_geom=2, n_sets=2, n_t=2, params="pe_da",
     return path
 
 
+# =============================================================================
+#  A CHECKPOINT THAT LOADS
+#  epochs defaults to 0, so this trains nothing. The tests below are about
+#  shapes, keys and recorded fields; a fixture that trained would make them slow
+#  and would not make them stricter.
+# =============================================================================
 def make_checkpoint(path, data, species=None, epochs=0, seed=0):
     """Save an UNTRAINED model the way train.py saves a trained one.
 

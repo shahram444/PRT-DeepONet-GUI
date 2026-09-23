@@ -45,6 +45,13 @@ from dataset_reader import (PRT3DDataset, dataset_kwargs_from_ckpt,   # noqa: E4
                             split_by_geometry)
 
 
+# =============================================================================
+#  WHAT THIS PROTECTS
+#  Three things that have each been wrong once: the target regrowing a species
+#  axis, --species not reaching the reader, and a split that shares a geometry
+#  between train and test. The last is the dangerous one, because it makes every
+#  held-out number better and nothing anywhere says so.
+# =============================================================================
 class Dataset(unittest.TestCase):
 
     @classmethod
@@ -61,7 +68,7 @@ class Dataset(unittest.TestCase):
         b1, b2, tk, y = ds[0]
         self.assertEqual(len(y.shape), 1, "one field, so no species axis")
         self.assertEqual(tuple(y.shape), (64,))
-        self.assertEqual(tuple(b2.shape), (2,))
+        self.assertEqual(tuple(b2.shape), (2,))      # pe and da, not six
         self.assertEqual(tuple(tk.shape), (64, ds.trunk_dim))
         self.assertEqual(b1.shape[0], ds.in_channels)
 
@@ -76,6 +83,8 @@ class Dataset(unittest.TestCase):
         ds = PRT3DDataset(self.two, n_points=16, species="A")
         self.assertEqual(ds.target_species, "A")
         self.assertEqual(ds.species_index, 1)
+        # Same seed on both, so the sampled voxels are identical and the only
+        # thing that can differ is which field the target came from.
         a = PRT3DDataset(self.two, n_points=16, species="Ac", seed=3)[0][3]
         b = PRT3DDataset(self.two, n_points=16, species="A", seed=3)[0][3]
         self.assertFalse(np.allclose(np.asarray(a), np.asarray(b)),
@@ -88,6 +97,8 @@ class Dataset(unittest.TestCase):
     def test_param_layouts(self):
         self.assertEqual(PRT3DDataset(self.two, n_points=16).param_names,
                          ["pe", "da"])
+        # The six-column layout has to keep working beside the two-column one:
+        # both exist in real files and the branch is sized from the file.
         six = PRT3DDataset(self.six, n_points=16)
         self.assertEqual(len(six.param_names), 6)
         self.assertEqual(tuple(six[0][1].shape), (6,),
@@ -99,6 +110,12 @@ class Dataset(unittest.TestCase):
         self.assertEqual(PRT3DDataset(self.steady, n_points=16).trunk_dim, 4,
                          "steady: x, y, z, gdf")
 
+    # -------------------------------------------------------------------
+    #  THE TRUNK'S COLUMNS
+    #  Width first, then range. A trunk of the right width carrying a column in
+    #  raw voxels instead of 0 to 1 trains without complaint and transfers to
+    #  nothing, which is the failure these two catch between them.
+    # -------------------------------------------------------------------
     def test_trunk_values_are_bounded(self):
         tk = np.asarray(PRT3DDataset(self.two, n_points=256)[0][2])
         self.assertTrue(np.isfinite(tk).all())
@@ -115,6 +132,13 @@ class Dataset(unittest.TestCase):
                          & set(np.asarray(b.geom_index)[te].tolist()),
                          "train and test must not share a geometry")
 
+    # -------------------------------------------------------------------
+    #  READING A CHECKPOINT BACK
+    #  evaluate.py and predict.py rebuild the dataset configuration from the
+    #  checkpoint rather than from flags typed again. These check that what was
+    #  written is what comes back, including for older files that predate a
+    #  field and have to keep working.
+    # -------------------------------------------------------------------
     def test_species_of_ckpt(self):
         self.assertEqual(species_of_ckpt({"species": "Ac"}), "Ac")
         self.assertEqual(species_of_ckpt({"species": ["A", "Ac"]}), "A",

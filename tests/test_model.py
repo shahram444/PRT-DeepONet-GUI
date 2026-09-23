@@ -38,6 +38,13 @@ from deeponet_model import (BranchCNN3D, BranchFNN, PRT_DeepONet3D,  # noqa: E40
                             Trunk, count_parameters)
 
 
+# =============================================================================
+#  THE ARCHITECTURE MUST STAY THE PUBLISHED ONE
+#  One output field, one scalar bias, no FiLM, a parameter branch that honours
+#  n_params, and a dataset with nz = 1 going through 2D convolutions. Every one
+#  of these is a thing that would train perfectly well if it drifted, and would
+#  quietly stop being comparable with the 2D release.
+# =============================================================================
 class Architecture(unittest.TestCase):
 
     def test_shapes(self):
@@ -81,6 +88,12 @@ class Architecture(unittest.TestCase):
             m(torch.randn(2, 1, 16, 16, 16), torch.randn(2, 6),
               torch.rand(2, 16, 5))
 
+    # -------------------------------------------------------------------
+    #  2D IS NOT A SEPARATE CODE PATH
+    #  A grid with nz = 1 must use Conv2d, and a real 3D grid must use Conv3d,
+    #  decided by the data and never by a flag. These two are what stop a 2D
+    #  fork of the network appearing.
+    # -------------------------------------------------------------------
     def test_two_d_fallback(self):
         b = BranchCNN3D(in_channels=1, out_dim=128, num_blocks=5,
                         grid=(64, 64, 1))
@@ -97,6 +110,13 @@ class Architecture(unittest.TestCase):
         kinds = {type(m).__name__ for m in b.features}
         self.assertIn("Conv3d", kinds)
 
+    # -------------------------------------------------------------------
+    #  THE 2048 IDENTITY
+    #  148 by 64 halved five times is 4 by 2 at 256 channels. 64 cubed halved
+    #  five times is 2 by 2 by 2 at 256. Both flatten to 2048, which is why the
+    #  published weights load into the 3D network at all. If this ever fails,
+    #  the warm start has stopped being possible and nothing else would say so.
+    # -------------------------------------------------------------------
     def test_flatten_width_matches_the_paper(self):
         b = BranchCNN3D(grid=(64, 64, 64), num_blocks=5)
         self.assertEqual(b.flat, 2 * 2 * 2 * 256)

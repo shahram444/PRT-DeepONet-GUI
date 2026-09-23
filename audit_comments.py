@@ -45,6 +45,17 @@ FLOW_NEW = [
     "3D/model/test_reference_parity.py",
     "gui/test_flow_panel.py",
 ]
+# The shared core, added in version 3. Every one of these replaced a copy that
+# lived somewhere else, so every one of them owes the reader an account of what
+# it replaced and why.
+CORE_NEW = [
+    "prt_core/reactions.py",
+    "prt_core/conventions.py",
+    "prt_core/inputs.py",
+    "prt_core/model.py",
+    "prt_core/test_core.py",
+    "2D_scripts/prt2d_model.py",
+]
 FLOW_CHANGED = [
     "3D/tools/dataset_reader.py",
     "3D/tools/collect_complab_output.py",
@@ -167,6 +178,7 @@ def main():
     bad = []
     for title, group, need in (
             ("NEW IN THIS VERSION", FLOW_NEW, True),
+            ("THE SHARED CORE", CORE_NEW, True),
             ("CHANGED FOR THIS VERSION", FLOW_CHANGED, True)):
         print("%s  (must carry the top block)" % title)
         for rel in group:
@@ -182,11 +194,12 @@ def main():
     # Everything else. No top block is required of a file the flow work never
     # touched, but the density floor still applies: a file nobody can read is
     # a problem whoever wrote it.
-    seen = set(FLOW_NEW) | set(FLOW_CHANGED)
+    seen = set(FLOW_NEW) | set(FLOW_CHANGED) | set(CORE_NEW)
     rest = []
     # tests/ is included: the test files are read by whoever is asked to run
     # them, more often than the code is, so they are held to the same bar.
-    for sub in ("3D/tools", "3D/model", "gui", "bridge", "tests", "."):
+    for sub in ("3D/tools", "3D/model", "gui", "bridge", "tests",
+                "prt_core", "2D_scripts", "."):
         d = os.path.join(HERE, sub)
         if not os.path.isdir(d):
             continue

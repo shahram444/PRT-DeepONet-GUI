@@ -2,8 +2,8 @@
 """
 build_transfer_set.py — 2D/ -> a 3D training file, for switch B.
 
-A thin wrapper over 3D/tools/ingest_2d.py that knows where the two halves of
-this repository live, so you do not have to type paths.  Run it from anywhere:
+A thin wrapper over the transfer-set builder that knows where the two halves of
+this repository live, so no paths have to be typed.  Run it from anywhere:
 
     python build_transfer_set.py                     # 200 domains, 128x64x64
     python build_transfer_set.py --limit 1000        # more domains
@@ -31,9 +31,22 @@ import argparse, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TWO_D = os.path.join(ROOT, "2D")
-INGEST = os.path.join(ROOT, "3D", "tools", "ingest_2d.py")
+# AUDIT BRIDGE-ROOT-01A. This pointed at 3D/tools/ingest_2d.py, which was
+# renamed to build_transfer_set_2d_to_3d.py, so the wrapper exited on its own
+# existence check and the GUI button that calls it did nothing. The older name
+# is still tried, so a checkout that predates the rename keeps working.
+INGEST = os.path.join(ROOT, "3D", "tools", "build_transfer_set_2d_to_3d.py")
+INGEST_OLD = os.path.join(ROOT, "3D", "tools", "ingest_2d.py")
+if not os.path.exists(INGEST) and os.path.exists(INGEST_OLD):
+    INGEST = INGEST_OLD
 
 
+# =============================================================================
+#  EVERY ARGUMENT IS PASSED THROUGH
+#  This file adds paths and defaults and nothing else. It does not interpret the
+#  builder's flags, so anything that works here works when the builder is called
+#  directly, which is what makes the two impossible to drift apart.
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "train2d.h5"))
@@ -57,15 +70,23 @@ def main():
     ap.add_argument("--synthetic", type=int, default=None,
                     help="skip 2D/ and synthesise N domains of the same "
                          "morphology instead. Useful to test the pipeline.")
-    a = ap.parse_args()
+    a = ap.parse_args()          # nothing below reads sys.argv again
 
     if not os.path.exists(INGEST):
-        sys.exit("cannot find %s\nIs this script still inside PRT-DeepONet/bridge/?"
-                 % INGEST)
+        sys.exit("cannot find the transfer-set builder.\n"
+                 "  looked for : %s\n"
+                 "  and also   : %s\n"
+                 "Is this script still inside PRT-DeepONet/bridge/?"
+                 % (INGEST, INGEST_OLD))
     if a.synthetic is None and not os.path.isdir(TWO_D):
         sys.exit("cannot find %s\nUse --synthetic N to build a set without it."
                  % TWO_D)
 
+    # ---------------------------------------------------------------------
+    #  THE COMMAND, PRINTED BEFORE IT RUNS
+    #  So that a run started from the window can be repeated by hand on a
+    #  cluster, by copying the line rather than reconstructing it.
+    # ---------------------------------------------------------------------
     cmd = [sys.executable, INGEST, "--out", a.out,
            "--target-shape", *map(str, a.target_shape),
            "--n-sets", str(a.n_sets), "--n-times", str(a.n_times),
@@ -74,8 +95,12 @@ def main():
            "--stokes-iters", str(a.stokes_iters), "--adr-steps", str(a.adr_steps),
            "--interface", a.interface]
     if a.species:
+        # Only passed when given: the builder's own default has to match the 3D
+        # file, and repeating it here would be a second place to keep in step.
         cmd += ["--species", *a.species]
     if a.synthetic is not None:
+        # --synthetic builds domains of the same morphology instead of reading
+        # the released ones, so the pipeline can be checked without 2D/ present.
         cmd += ["--synthetic", str(a.synthetic)]
     else:
         cmd += ["--jung-dir", TWO_D, "--limit", str(a.limit)]
@@ -85,7 +110,7 @@ def main():
     if r.returncode:
         sys.exit(r.returncode)
 
-    print("\nnext:")
+    print("\nnext:")            # the command that consumes what was just built
     print("  python %s --data <3d.h5> --transfer-2d %s --transfer-2d-frac 0.3 --dim-free"
           % (os.path.join(ROOT, "3D", "model", "train.py"), a.out))
 

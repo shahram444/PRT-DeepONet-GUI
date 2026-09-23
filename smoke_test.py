@@ -25,6 +25,11 @@ that is what the figures and the held-out error are for.
 WHAT RUNS IN THE DEFAULT PASS
 
   every file compiles            a syntax error anywhere in the tree
+  the shared core                the reaction registry, the two distance
+                                 conventions, the one geometry reader and the
+                                 one network definition. Includes the check
+                                 that the named 'published' convention really
+                                 is the notebook's own column, voxel for voxel
   the network                    the output growing a species axis, the bias
                                  becoming a vector, FiLM coming back, the
                                  parameter branch ignoring n_params, a 2D
@@ -62,6 +67,12 @@ import subprocess
 import sys
 import time
 
+# =============================================================================
+#  WHERE THE CHECKS LIVE
+#  Paths from this file's own location, so the gate runs from anywhere. Each
+#  entry below is a real script with a real self-test; nothing here duplicates a
+#  check that already exists somewhere else.
+# =============================================================================
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "3D", "tools")
 MODEL = os.path.join(HERE, "3D", "model")
@@ -70,7 +81,13 @@ TESTS = os.path.join(HERE, "tests")
 
 PY = sys.executable
 
+CORE = os.path.join(HERE, "prt_core")
+
 FAST = [
+    # The shared core comes first, because everything below it now imports the
+    # network, the reaction registry, the distance conventions and the geometry
+    # reader from here. If this fails, the failures further down are echoes.
+    ("the shared core", [os.path.join(CORE, "test_core.py"), "--quiet"]),
     ("the network", [os.path.join(TESTS, "test_model.py")]),
     ("the dataset layer", [os.path.join(TESTS, "test_dataset.py")]),
     ("evaluate and predict", [os.path.join(TESTS, "test_pipeline.py")]),
@@ -85,10 +102,13 @@ FAST = [
     ("the three switches", [os.path.join(TOOLS, "test_three_switches.py")]),
     ("the velocity pipeline", [os.path.join(MODEL, "test_flow_pipeline.py")]),
     ("what the buttons send", [os.path.join(GUI, "test_gui_commands.py")]),
+    # AUDIT GUI-02: this test was in no runner, so the page it describes went
+    # missing without anything noticing.
+    ("the flow pipeline", [os.path.join(GUI, "test_flow_panel.py")]),
     ("the sweep boxes", [os.path.join(GUI, "test_gui_sweep_modes.py")]),
 ]
 
-SLOW = [
+SLOW = [        # real lattice-Boltzmann solves: minutes, not seconds
     ("the 2D simulator", [os.path.join(TOOLS, "prtlb_2d.py")]),
     ("the 3D simulator", [os.path.join(TOOLS, "prtlb_3d.py")]),
     ("the flow solvers", [os.path.join(TOOLS, "test_flow_solvers.py")]),
@@ -96,6 +116,8 @@ SLOW = [
      [os.path.join(TOOLS, "test_documented_numbers.py")]),
 ]
 
+# torch and matplotlib are required because the gate itself trains nothing but
+# does build a network and write a figure.
 NEEDED = [("numpy", "numpy"), ("scipy", "scipy"), ("h5py", "h5py"),
           ("torch", "torch"), ("matplotlib", "matplotlib")]
 OPTIONAL = [("skfmm", "scikit-fmm, used by predict.py for the geodesic field"),
@@ -103,6 +125,13 @@ OPTIONAL = [("skfmm", "scikit-fmm, used by predict.py for the geodesic field"),
             ("tkinter", "tkinter, needed only by the window")]
 
 
+# =============================================================================
+#  WHAT HAS TO BE INSTALLED, AND WHAT ONLY HELPS
+#  Reported before anything tries to use them, and split in two: a missing
+#  REQUIRED package is why the run below will fail, and a missing optional one
+#  is a note. Printing both the same way sends people installing things they do
+#  not need.
+# =============================================================================
 def packages():
     """Report what is importable before anything tries to use it."""
     missing = []
@@ -111,7 +140,7 @@ def packages():
             __import__(mod)
         except Exception:
             missing.append(pkg)
-    absent = []
+    absent = []          # optional: named, but never a failure
     for mod, why in OPTIONAL:
         try:
             __import__(mod)
@@ -127,6 +156,8 @@ def compiles():
     next to the sources and a read-only checkout still passes.
     """
     bad = []
+    # __pycache__ and .git are skipped: one holds bytecode that does not parse
+    # as source, the other is not source at all.
     for root, dirs, files in os.walk(HERE):
         dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
         for f in sorted(files):

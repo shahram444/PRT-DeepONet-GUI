@@ -33,6 +33,12 @@ import argparse
 import subprocess
 import sys
 
+# =============================================================================
+#  WHAT THIS PROJECT NEEDS, AND WHAT IT ONLY LIKES
+#  Split deliberately. A missing REQUIRED package stops the analysis; a missing
+#  optional one costs a picture or a faster route. Reporting the two the same
+#  way sends people installing things they do not need.
+# =============================================================================
 PACKAGES = [
     ("numpy", "numpy", "arrays, used by everything"),
     ("scipy", "scipy", "distance transforms, connected components, smoothing"),
@@ -57,6 +63,8 @@ def have(mod):
         __import__(mod)
         return True
     except Exception:                                          # noqa: BLE001
+        # Any failure to import counts as missing, not just ImportError: a
+        # half-installed package raises other things and is no more usable.
         return False
 
 
@@ -64,11 +72,13 @@ def report(title):
     print("=" * 72)
     print(title)
     print("=" * 72)
-    print("Python being used:")
+    print("Python being used:")         # which interpreter, before what is in it
     print("   %s" % sys.executable)
     print("   version %s" % sys.version.split()[0])
     print()
     allok = True
+    # torch last, because it is the slowest to import and the largest to
+    # install, so its line is the one people wait for.
     for mod, pkg, why in PACKAGES + [TORCH]:
         ok = have(mod)
         allok &= ok
@@ -78,12 +88,21 @@ def report(title):
 
 
 def pip(args):
+    # Run as a module of THIS interpreter, never as a bare "pip": on a machine
+    # with several Pythons those are routinely different environments.
+
     cmd = [sys.executable, "-m", "pip"] + args
     print("$ " + " ".join(cmd), flush=True)
     r = subprocess.run(cmd)
     return r.returncode
 
 
+# =============================================================================
+#  THE EXIT STATUS
+#  --check returns 0 only when everything required is present. It used to
+#  report what was missing and return success anyway, so a setup step that
+#  tested it carried on into a run that could not work.
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--torch", choices=["cpu", "cuda", "skip"], default="cpu",
@@ -96,10 +115,19 @@ def main():
                     help="upgrade packages that are already present")
     a = ap.parse_args()
 
-    if report("CHECKING WHAT IS ALREADY INSTALLED") and not a.upgrade:
+    # AUDIT GUIINST-10. --check used to return 0 whatever it found, so a
+    # scripted environment check reported missing packages and still exited
+    # successfully. It now returns 0 only when everything is present, which is
+    # what an exit status is for.
+    everything_present = report("CHECKING WHAT IS ALREADY INSTALLED")
+    if everything_present and not a.upgrade:
         print("Everything the project needs is already present. Nothing to do.")
         return 0
     if a.check:
+        if not everything_present:
+            print("Some packages are missing. Run this again without --check "
+                  "to install them.")
+            return 1
         return 0
 
     print("=" * 72)

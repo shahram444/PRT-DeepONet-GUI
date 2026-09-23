@@ -93,9 +93,17 @@ def two_channels(nx=16, ny=11):
     run the full length, so both are connected to the inlet, and any descriptor
     that measures pore width has to tell them apart.
     """
+    # AUDIT TESTCOMMON-08. The narrow channel was hard-coded at column 9, so a
+    # caller passing ny below 10 silently wrote nothing and every descriptor
+    # test that used this fixture failed downstream for the wrong reason. The
+    # width is now required, and the channel is placed relative to it.
+    if ny < 9:
+        raise ValueError(
+            "two_channels needs ny of at least 9 to hold a 5-voxel channel, a "
+            "solid divider and a 1-voxel channel; it was given ny=%d" % ny)
     m = np.full((nx, ny), SOLID, np.uint8)
     m[:, 1:6] = PORE           # the wide channel: 5 voxels
-    m[:, 9] = PORE             # the narrow channel: 1 voxel
+    m[:, ny - 2] = PORE        # the narrow channel: 1 voxel, always inside
     return m
 
 
