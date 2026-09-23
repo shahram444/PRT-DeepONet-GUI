@@ -51,7 +51,14 @@ def tiny_dataset(path, velocity=True):
         s.create_dataset("geom_index", data=np.array([0, 1], np.int32))
         s.create_dataset("params", data=np.array([[1.0, 1.0], [10.0, 1.0]],
                                                  np.float32))
-        s.create_dataset("conc", data=np.zeros((2, 3, 2, 12, 9, 1), np.float16))
+        # conc_scale is part of the layout, not an optional extra: the
+        # stored field is already DIVIDED by it, so a reader that
+        # guessed one would hand back numbers in invented units. The
+        # reader refuses a file without it, and this fixture claims to
+        # be in the project's layout, so it writes one.
+        _c = s.create_dataset("conc",
+                              data=np.zeros((2, 3, 2, 12, 9, 1), np.float16))
+        _c.attrs["conc_scale"] = np.ones(2, np.float32)
         s.create_dataset("t_norm", data=np.linspace(0, 1, 3, dtype=np.float32))
         # The velocity is OPTIONAL here on purpose: half these tests need a
         # file that has one and half need a file that does not.

@@ -25,6 +25,12 @@ that is what the figures and the held-out error are for.
 WHAT RUNS IN THE DEFAULT PASS
 
   every file compiles            a syntax error anywhere in the tree
+  files read back correctly      the dataset layout drifting from what the
+                                 reader expects, and add_flow_features.py
+                                 touching something it was not asked to
+  same input, same answer        the seed being ignored, a scaling that cannot
+                                 be undone
+  bad input is refused           a guard removed after the thing it guarded
   the shared core                the reaction registry, the two distance
                                  conventions, the one geometry reader and the
                                  one network definition. Includes the check
@@ -88,6 +94,11 @@ FAST = [
     # network, the reaction registry, the distance conventions and the geometry
     # reader from here. If this fails, the failures further down are echoes.
     ("the shared core", [os.path.join(CORE, "test_core.py"), "--quiet"]),
+    # The three numbered groups that no runner used to open. Seconds each, and
+    # ten real failures hid behind their absence for two releases.
+    ("files read back correctly", [os.path.join(TESTS, "test_03_data.py")]),
+    ("same input, same answer", [os.path.join(TESTS, "test_04_repeatable.py")]),
+    ("bad input is refused", [os.path.join(TESTS, "test_05_refusals.py")]),
     ("the network", [os.path.join(TESTS, "test_model.py")]),
     ("the dataset layer", [os.path.join(TESTS, "test_dataset.py")]),
     ("evaluate and predict", [os.path.join(TESTS, "test_pipeline.py")]),

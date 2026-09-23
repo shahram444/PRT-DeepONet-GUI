@@ -402,9 +402,38 @@ class PRT3DDataset(Dataset):
         self._rng = np.random.default_rng(seed)
 
         with _open(h5path) as h:
-            self.n_all = int(h.attrs["n_samples"])
-            self.shape = tuple(int(v) for v in h.attrs["shape"])
-            self.species = [s.decode() for s in h.attrs["species"]]
+            # BOOKKEEPING THAT THE ARRAYS ALREADY SAY.
+            #
+            # n_samples, shape and species used to be read as REQUIRED
+            # attributes, so a file that carried every array correctly and
+            # happened not to repeat the count in an attribute could not be
+            # opened at all, with a KeyError from inside h5py rather than a
+            # sentence. Our own collectors always write them, but a file
+            # written by hand, by an older collector, or by somebody else's
+            # script is a perfectly good dataset, and the first two of these
+            # are derivable from samples/conc, which is the authority anyway.
+            #
+            # If the attribute and the array ever disagreed, the array would be
+            # right, so deriving is not merely a fallback: it is the better
+            # answer. conc_scale below is NOT treated this way, because
+            # inventing one would silently change what the numbers mean.
+            conc = h["samples/conc"]
+            self.n_all = int(h.attrs["n_samples"]) if "n_samples" in h.attrs \
+                else int(conc.shape[0])
+            self.shape = (tuple(int(v) for v in h.attrs["shape"])
+                          if "shape" in h.attrs
+                          else tuple(int(v) for v in conc.shape[3:]))
+            if "species" in h.attrs:
+                self.species = [s.decode() for s in h.attrs["species"]]
+            else:
+                # Names cannot be derived, only counted. Generic ones let the
+                # file open; the note says they are ours and not the file's, so
+                # nobody reports a result against a species name we invented.
+                self.species = ["C%d" % i for i in range(int(conc.shape[2]))]
+                print("note: this file records no species names, so the %d "
+                      "fields are called %s here. They are this reader's "
+                      "names, not the file's."
+                      % (len(self.species), ", ".join(self.species)))
             self.param_names = [s.decode() for s in h.attrs["param_names"]]
             # PARAMETER TABLE LAYOUT. A file written with the default records
             # two columns, (pe, da), which is what the model's parameter branch
@@ -441,7 +470,23 @@ class PRT3DDataset(Dataset):
             self._geom_keys = set(h["geom"].keys())
             self.geom_index = h["samples/geom_index"][:]
             self.params = h["samples/params"][:]
-            self.t_norm = h["samples/t_norm"][:]
+            # TWO SHAPES ARE BOTH LEGITIMATE HERE.
+            #
+            # Our collectors write one row per run, (S, T), because runs
+            # converge at different iterations and each one carries its own
+            # snapshot times. A file where every run shares one time ladder
+            # stores it once, as (T,), and that is a perfectly good dataset:
+            # it is what a campaign at fixed output intervals produces.
+            #
+            # Indexed as [s, t] below, so the shared ladder is repeated to
+            # (S, T) here, once, rather than every read having to ask which
+            # shape it got. It used to be indexed [s, t] regardless, which
+            # meant a shared ladder raised IndexError from inside __getitem__
+            # after the file had opened cleanly.
+            _t = np.asarray(h["samples/t_norm"][:], np.float32)
+            if _t.ndim == 1:
+                _t = np.repeat(_t[None, :], self.n_all, axis=0)
+            self.t_norm = _t
             # pore voxel lists are small and reused constantly -> cache them
             mat = h["geom/material"][:]
         self.pore_idx = [np.argwhere(m == PORE).astype(np.int32) for m in mat]

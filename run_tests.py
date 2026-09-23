@@ -77,6 +77,66 @@ CHECKS = [
      "with each other; the message names which pair. A failure here makes the "
      "failures below it echoes, so fix this one first."),
 
+    # WHY THESE FIVE ARE HERE.
+    #
+    # tests/ holds two sets of files: the three named ones below, and a
+    # numbered series run by tests/run_all_tests.py. The two sets overlap
+    # heavily and NEITHER was complete, so seeing everything meant knowing to
+    # run both runners, and nobody did. Ten real failures sat in the numbered
+    # series for two releases because this runner never opened them.
+    #
+    # They are listed here individually rather than by calling run_all_tests.py,
+    # because that would run the lattice Boltzmann self-tests a second time and
+    # add four minutes for no new information.
+    ("everything starts", "static", [os.path.join(TESTS, "test_01_smoke.py")],
+     "every module importing and every script surviving its own --help. The "
+     "cheapest question asked of everything, and the one that makes every "
+     "other test meaningful",
+     "Read which import failed. This is almost always a file that was renamed "
+     "or a package that is not installed; run python gui/install_requirements.py "
+     "--check first."),
+
+    ("one function at a time", "units", [os.path.join(TESTS, "test_02_units.py")],
+     "the descriptors and the scalings against answers worked out by hand, "
+     "never produced by this code. A test whose expected answer came from the "
+     "code under test proves only that the code is deterministic",
+     "The failing assertion names the quantity and the hand-computed value. "
+     "Work the small example through on paper before changing anything: these "
+     "numbers are the definition, not a recorded output."),
+
+    ("files read back correctly", "data", [os.path.join(TESTS, "test_03_data.py")],
+     "the dataset layout being what everything downstream expects, a geometry "
+     "surviving a round trip, and add_flow_features.py changing a file in "
+     "place without touching anything it was not asked to",
+     "If a fixture raised rather than a check failing, the fixture and the "
+     "reader have drifted apart: tests/_common.py two_channels needs ny of at "
+     "least 9, and the reader needs conc_scale on samples/conc."),
+
+    ("same input, same answer", "data",
+     [os.path.join(TESTS, "test_04_repeatable.py")],
+     "the seed being obeyed, the pressure solve repeating exactly, and every "
+     "scaling being undoable. Without this a result cannot be reproduced and "
+     "an ablation compares nothing",
+     "If the voxel sampling differs between two runs at the same seed, "
+     "something in dataset_reader.py is drawing from the global numpy random "
+     "state instead of its own default_rng(seed)."),
+
+    ("bad input is refused", "data",
+     [os.path.join(TESTS, "test_05_refusals.py")],
+     "every wrong request failing with a sentence rather than a traceback or, "
+     "worse, a plausible looking answer: a missing flow field, a geometry at "
+     "the wrong size, a bare state dict, two contradictory switches",
+     "A test here failing usually means a guard was removed or moved after the "
+     "thing it was guarding. Read which refusal stopped happening."),
+
+    ("the comments", "static", [os.path.join(HERE, "audit_comments.py"), "--quiet"],
+     "every file carrying the top block that says what changed from the 2D "
+     "version, block comments marking its sections, and line comments where "
+     "the code looks wrong until explained",
+     "It names each file and what it is short of. This is a documentation "
+     "gate, not a correctness one, so it never blocks a result; it blocks a "
+     "release."),
+
     ("the network", "model", [os.path.join(TESTS, "test_model.py")],
      "the architecture staying the published 2D one: one output field, a "
      "scalar bias, no FiLM, the parameter branch honouring n_params, and a "

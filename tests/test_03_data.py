@@ -109,9 +109,13 @@ class DatasetLayout(TempFolder):
         this tests that the LAYOUT is what everything downstream expects.
         """
         G, S, T, C = 2, 4, 3, 2
-        shape = (10, 8, 1)
-        mats = np.stack([open_channel(10, 8)[:, :, None],
-                         two_channels(10, 8)[:, :, None]]).astype(np.uint8)
+        # ny is 9 and not 8 on purpose. two_channels needs at least 9 columns
+        # to hold a 5-voxel channel, a solid divider and a 1-voxel channel. At
+        # 8 the two channels touch and it is one 6-wide channel, which is not
+        # the fixture this file says it is using.
+        shape = (10, 9, 1)
+        mats = np.stack([open_channel(10, 9)[:, :, None],
+                         two_channels(10, 9)[:, :, None]]).astype(np.uint8)
         with h5py.File(path, "w") as h:
             h.attrs["shape"] = np.array(shape, np.int32)
             h.attrs["dimension"] = 2
@@ -134,7 +138,14 @@ class DatasetLayout(TempFolder):
             s.create_dataset("geom_index", data=np.array([0, 0, 1, 1], np.int32))
             s.create_dataset("params", data=np.array(
                 [[1.0, 0.5], [10.0, 0.5], [1.0, 5.0], [10.0, 5.0]], np.float32))
-            s.create_dataset("conc", data=np.zeros((S, T, C) + shape, np.float16))
+            # conc_scale is part of the layout, not an optional extra: the
+            # stored field is already DIVIDED by it, so a reader that
+            # guessed one would hand back numbers in invented units. The
+            # reader refuses a file without it, and this fixture claims to
+            # be in the project's layout, so it writes one.
+            _c = s.create_dataset("conc",
+                                  data=np.zeros((S, T, C) + shape, np.float16))
+            _c.attrs["conc_scale"] = np.ones(C, np.float32)
             s.create_dataset("t_norm", data=np.linspace(0, 1, T, dtype=np.float32))
             if with_velocity:
                 s.create_dataset("velocity", data=np.zeros((S, 3) + shape, np.float16))
@@ -236,10 +247,11 @@ class AddFlowFeatures(TempFolder):
 
     def _dataset(self):
         p = os.path.join(self.d, "d.h5")
-        mats = np.stack([two_channels(10, 8)[:, :, None],
-                         open_channel(10, 8)[:, :, None]]).astype(np.uint8)
+        # ny 9, for the same reason as in _tiny_dataset above.
+        mats = np.stack([two_channels(10, 9)[:, :, None],
+                         open_channel(10, 9)[:, :, None]]).astype(np.uint8)
         with h5py.File(p, "w") as h:
-            h.attrs["shape"] = np.array((10, 8, 1), np.int32)
+            h.attrs["shape"] = np.array((10, 9, 1), np.int32)
             h.attrs["dimension"] = 2
             h.attrs["pore_code"] = PORE
             g = h.create_group("geom")

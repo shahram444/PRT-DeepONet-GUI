@@ -113,6 +113,24 @@ sections, and line comments on the parts that look wrong until explained. It now
 reports none, and the audit itself was extended to cover `prt_core/` and
 `2D_scripts/`, so the new code is held to the same bar as the old.
 
+## Found after v3.0.0 went out, by an independent run
+
+A reviewer ran `tests/run_all_tests.py`, which neither `smoke_test.py` nor
+`run_tests.py` had ever opened, and got 16 errors across three groups. Both of
+those runners reported everything green on the same checkout, which is the
+whole point of the finding.
+
+| what | why it mattered | what was done |
+|---|---|---|
+| `tests/` held two sets of files and two runners, and NEITHER runner was complete | seeing everything meant knowing to run both, and nobody did. Ten of the errors below had been failing since before v2.0.0 | the five numbered groups and the comment audit are now checks in `run_tests.py`, and the three fast ones are also in `smoke_test.py`. They are listed individually rather than by calling the other runner, which would run the lattice Boltzmann self-tests twice for no new information |
+| `two_channels(10, 8)` raised | the fixture asks for two channels separated by a solid divider, and 8 columns cannot hold a 5-voxel channel, a divider and a 1-voxel channel. Before the audit added a width check it wrote past the end of the array and raised `IndexError`; after, it raised a clear `ValueError`. It was wrong either way | the two callers in `test_03_data.py` use a 9-column grid, with a comment saying why 8 is not enough |
+| the reader required `n_samples`, `shape` and `species` as attributes | a file carrying every array correctly could not be opened, with a `KeyError` from inside h5py rather than a sentence. The first two are derivable from `samples/conc`, which is the authority anyway | derived when absent. Species names cannot be derived, so generic ones are used and the run says out loud that they are the reader's names and not the file's. `conc_scale` is still required, because inventing one silently changes what every number means |
+| `samples/t_norm` was indexed `[s, t]` whatever its shape | a file where every run shares one time ladder stores it once, as `(T,)`, which is what a campaign at fixed output intervals produces. It opened cleanly and then raised `IndexError` from inside `__getitem__` | a shared ladder is repeated to `(S, T)` once, at read time |
+
+After the fix, all three runners agree: `smoke_test.py` 17 green,
+`run_tests.py` 20 green plus the physics, `tests/run_all_tests.py` 17 groups,
+everything that ran passed.
+
 ## What the audit measured, and what it did not
 
 The audit's runtime section is right that its numbers settle nothing about
