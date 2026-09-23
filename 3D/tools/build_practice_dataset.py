@@ -25,6 +25,12 @@ from prtlb_3d import (SOLID, WALL, PORE, solve_adr, check_physics,   # noqa: F40
                       keep_inlet_connected, assert_finite_distance)
 
 
+# =============================================================================
+#  A ROCK
+#  Gaussian noise, smoothed, then thresholded at the porosity asked for. This is
+#  not meant to look like a real pore structure. It is meant to be cheap, and to
+#  percolate, so that the pipeline can be exercised in seconds.
+# =============================================================================
 def geometry(shape, phi, seed):
     rng = np.random.default_rng(seed)
     f = ndimage.gaussian_filter(rng.standard_normal(shape), 2.0, mode="wrap")
@@ -38,8 +44,16 @@ def geometry(shape, phi, seed):
     return g
 
 
+# =============================================================================
+#  THE GEODESIC DISTANCE
+#  Done by repeated relaxation rather than with scikit-fmm, so that a practice
+#  dataset can be built on a machine that has none of the optional packages
+#  installed. It is slower and gives the same answer on a grid this small.
+# =============================================================================
 def geodesic(g):
     """Geodesic distance from the inlet through pore space, in voxels."""
+    # NaN in the solid, a large number in unvisited pore. The two are different
+    # things and collapsing them is how a grain ends up with a distance.
     inf = np.float32(1e9)
     d = np.where(g == PORE, inf, np.nan).astype(np.float32)
     d[0][g[0] == PORE] = 0.0
@@ -52,6 +66,8 @@ def geodesic(g):
                 sl[ax] = 0 if sh > 0 else -1
                 nb[tuple(sl)] = inf
                 d = np.where(g == PORE, np.fmin(d, np.nan_to_num(nb, nan=inf) + 1.0), np.nan)
+        # Stop as soon as a whole sweep changes nothing, rather than running the
+        # full 4 * nx passes: most rocks settle in far fewer.
         if np.nanmax(np.abs(np.nan_to_num(d - prev, nan=0.0))) < 1e-6:
             break
     return np.nan_to_num(d, nan=0.0).astype(np.float32)
@@ -136,8 +152,15 @@ def main():
             pe = float(10 ** rng.uniform(-0.5, 1.5))
             da = float(10 ** rng.uniform(-1, 1))
             gi[k] = i
-            # this toy set has biotic kinetics, so its single Da is da_bio
-            par[k] = param_row(a.params, pe, da, da * 0.5, 0.1, 0.1, 0.05,
+            # AUDIT PRACTICE-12. The metadata recorded an abiotic Damkohler of
+            # da * 0.5 while adr() below is only ever given the single da, so
+            # under the six-column layout the file claimed a second reaction
+            # that the solver never ran. The recorded value is now the one that
+            # was actually used: zero, because this toy set has no abiotic
+            # step. Under the default two-column layout the abiotic entry is
+            # not written at all and nothing changes.
+            da_abio = 0.0
+            par[k] = param_row(a.params, pe, da, da_abio, 0.1, 0.1, 0.05,
                                biotic=True)
             vel[k] = vels[i]
             nfo = {}

@@ -3,6 +3,31 @@
 dataset_reader.py — PyTorch Dataset over dataset_reader.h5, shaped exactly the way
 the 3D PRT-DeepONet consumes it.  This is the "ready for the model" layer.
 
+WHAT CHANGED FROM THE 2D VERSION
+    The published notebooks have no reader. Each one loads a .npz of 9472 values,
+    builds the three input tensors inline in a cell, and evaluates the trunk at every
+    one of the 9472 grid points. That is a perfectly good way to run one domain.
+
+    Three things make it impossible in 3D, and this file is the answer to all three.
+
+    THE GRID IS TOO BIG TO EVALUATE WHOLE. 64 cubed is 262,144 points, which is a
+    26.8 GB activation tensor at batch 25. The trunk is therefore evaluated at a random
+    sample of PORE voxels, 8192 by default, which costs slightly less than the 2D
+    model's full grid. Sampling happens here, and nowhere else, so the model itself
+    never knows the difference.
+
+    THE DATA WILL NOT FIT IN MEMORY. A campaign is thousands of runs, so the file is
+    read lazily out of HDF5, one snapshot of one field of one run at a time, which is
+    also the chunk the writers use.
+
+    THE SPLIT MUST BE BY GEOMETRY. Splitting by sample puts snapshots of the same rock
+    on both sides and inflates every held-out number. split_three_ways is the only
+    route the training script uses, and the geometry ids it returns go into the
+    checkpoint so the test set can be reproduced rather than recomputed.
+
+    What did NOT change is the item it hands back: the same four tensors the 2D
+    notebook's model already expects, with one extra coordinate.
+
 Each item is the 4-tuple the 2D notebook's model already expects, lifted to 3D:
 
     branch1  (Cin, nx, ny, nz)   geometry  (+ velocity channels if requested)
@@ -229,7 +254,12 @@ def _open(path):
 
 def split_by_geometry(h5path, frac=0.15, seed=0):
     """Hold out whole GEOMETRIES, never individual samples.  A split by sample
-    leaks pore structure between train and test and inflates the score."""
+    leaks pore structure between train and test and inflates the score.
+
+    Kept for callers that want the old two-way split, and used as the
+    validation-plus-test half of the three-way split below, so the two stay
+    consistent.
+    """
     with _open(h5path) as h:
         gidx = h["samples/geom_index"][:]
     uniq = np.unique(gidx)
@@ -240,6 +270,64 @@ def split_by_geometry(h5path, frac=0.15, seed=0):
     te = np.where(np.isin(gidx, list(te_g)))[0]
     tr = np.where(~np.isin(gidx, list(te_g)))[0]
     return tr, te
+
+
+def split_three_ways(h5path, val_frac=0.15, test_frac=0.15, seed=0):
+    """Train, validation and test, as three disjoint sets of whole geometries.
+
+    AUDIT TRAIN-04. Training used to hold out one set and use it twice: once
+    every epoch to decide which checkpoint to keep, and again afterwards as the
+    reported score. Selecting on a set and then reporting on it makes the
+    number optimistic, and by an amount nobody can quantify after the fact.
+    Three sets fix that. Validation picks the checkpoint. Test is opened once,
+    after the choice is made, and is what gets reported.
+
+    Whole geometries, as before, because a split by sample would put the same
+    pore structure on both sides.
+
+    Returns (train_idx, val_idx, test_idx, geometry_ids) where geometry_ids is
+    a dict of the three geometry lists, so the exact split can be written into
+    the checkpoint and reproduced later instead of being recomputed from a
+    fraction and a seed that may have changed.
+    """
+    with _open(h5path) as h:
+        gidx = h["samples/geom_index"][:]
+    uniq = np.unique(gidx)
+    if len(uniq) < 3:
+        raise ValueError(
+            "a three-way split needs at least 3 geometries, this file has %d. "
+            "Build a larger dataset, or pass --two-way-split to train on the "
+            "old arrangement and accept that the reported score is the one "
+            "the checkpoint was chosen on." % len(uniq))
+
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(uniq)
+    n_te = max(1, int(round(test_frac * len(uniq))))
+    n_va = max(1, int(round(val_frac * len(uniq))))
+    if n_te + n_va >= len(uniq):
+        raise ValueError(
+            "val_frac %.2f and test_frac %.2f leave no geometries to train on "
+            "out of %d" % (val_frac, test_frac, len(uniq)))
+
+    te_g = perm[:n_te]
+    va_g = perm[n_te:n_te + n_va]
+    tr_g = perm[n_te + n_va:]
+    sel = lambda gs: np.where(np.isin(gidx, list(gs)))[0]
+    ids = {"train": sorted(int(g) for g in tr_g),
+           "val": sorted(int(g) for g in va_g),
+           "test": sorted(int(g) for g in te_g)}
+    return sel(tr_g), sel(va_g), sel(te_g), ids
+
+
+def indices_for_geometries(h5path, geom_ids):
+    """The sample rows belonging to a given list of geometries.
+
+    Used to reproduce a split recorded in a checkpoint exactly, rather than
+    recomputing it from a fraction and a seed. AUDIT TRAIN-04.
+    """
+    with _open(h5path) as h:
+        gidx = h["samples/geom_index"][:]
+    return np.where(np.isin(gidx, list(geom_ids)))[0]
 
 
 class PRT3DDataset(Dataset):
@@ -272,7 +360,8 @@ class PRT3DDataset(Dataset):
                  time_index=None, seed=0, with_time=None,
                  flow_proxy=False, dim_free=False, flow_mode="tau",
                  keep_geometry_channel=False, u_floor=0.01, source_tag=0,
-                 velocity_informed="off", geom_features=False, species=None):
+                 velocity_informed="off", geom_features=False, species=None,
+                 vel_stats=None, target_scale=None):
         self.h5path = h5path
         self.n_points = int(n_points)
         self.full_grid = bool(full_grid)
@@ -289,7 +378,24 @@ class PRT3DDataset(Dataset):
         self.geom_features = bool(geom_features)
         self._species_arg = species
         self.source_tag = int(source_tag)      # 0 = 3D native, 1 = extruded 2D
-        self._vel_stats = None                 # (mu, sd) per component, computed once
+        # AUDIT DATA-05. Each Dataset used to fit its own velocity mean and
+        # standard deviation from its own rows, so the training split and the
+        # held-out split were scaled by different numbers and the network saw
+        # a held-out rock through a scaling it was never trained under. The
+        # statistics are now fitted once, on the training split, and passed in
+        # here for every other split. None still means "fit them yourself",
+        # which is what a single-split caller such as predict.py wants.
+        self._vel_stats = None if vel_stats is None else (
+            np.asarray(vel_stats[0], np.float32), np.asarray(vel_stats[1], np.float32))
+        # AUDIT DATA-04. The concentration scale stored in the file is computed
+        # over every run in it, including the ones that later become the test
+        # split, so normalising with it lets held-out values influence the
+        # training targets. It stays in the file because it is the physical
+        # unit, and it is still what a prediction is multiplied back by. What
+        # the TARGET is divided by during training is this, when supplied:
+        # fitted on the training split alone and carried in the checkpoint.
+        self.target_scale = None if target_scale is None else np.asarray(
+            target_scale, np.float32)
         self._flow_cache = {}                  # geom index -> (vel_norm, tau)
         self.stagnant_by_geom = {}             # geom index -> stagnant fraction
         self._h = None
@@ -472,15 +578,25 @@ class PRT3DDataset(Dataset):
         it matters more than it looks. The raw field spans about 1e-4 in lattice units
         while the pore mask channel is 0 or 1, so an unscaled velocity channel arrives
         four orders of magnitude below its neighbour and the first convolution barely
-        registers it. Computed once over the runs this Dataset was given, so a training
-        split and its held-out split do not scale differently.
+        registers it. Fitted once on the TRAINING split and handed to every other
+        split, so a training rock and a held-out rock are scaled by the same
+        numbers rather than each by its own. AUDIT DATA-05.
         """
         if self._vel_stats is not None:
             return self._vel_stats
         key = "samples/velocity_pred" if self.velocity_informed == "predicted" \
             else "samples/velocity"
         nvel = sum(1 for c in self.branch_ch if c in ("ux", "uy", "uz"))
-        take = self.indices[:min(64, len(self.indices))]
+        # AUDIT DATA-05. This took the first 64 rows in index order, which are
+        # the first geometries in the file rather than a sample of them, so a
+        # file written in order of porosity was scaled by its low-porosity end.
+        # Spread the sample across the split instead, deterministically.
+        n_take = min(64, len(self.indices))
+        if n_take == len(self.indices):
+            take = self.indices
+        else:
+            take = self.indices[np.linspace(0, len(self.indices) - 1, n_take,
+                                            dtype=int)]
         acc = [[] for _ in range(nvel)]
         for si in take:
             v = self.h[key][int(si)].astype(np.float32)
@@ -491,6 +607,15 @@ class PRT3DDataset(Dataset):
         sd = np.array([max(float(np.concatenate(a).std()), 1e-30) for a in acc], np.float32)
         self._vel_stats = (mu, sd)
         return self._vel_stats
+
+    @property
+    def vel_stats(self):
+        """The velocity scaling actually in use, fitted or supplied.
+
+        train.py reads this off the training split and passes it to the other
+        splits and into the checkpoint. AUDIT DATA-05.
+        """
+        return self._velocity_stats()
 
     def __getitem__(self, k):
         s, t = self._decode(k)
@@ -583,7 +708,13 @@ class PRT3DDataset(Dataset):
         conc = self.h["samples/conc"][s, t, c].astype(np.float32)   # (nx,ny,nz)
         target = conc[xi, yi, zi]                                   # (P,)
         if self.normalize:
-            target = target / self.conc_scale[c]
+            # AUDIT DATA-04. target_scale is the training-only scale when the
+            # caller supplied one; conc_scale is the file's own, computed over
+            # every run in it including the ones that become the test split. It
+            # stays the physical unit and the fallback for a single-split
+            # caller and for a checkpoint written before this existed.
+            scale = self.conc_scale if self.target_scale is None else self.target_scale
+            target = target / scale[c]
 
         if torch is None:
             return branch1, branch2, trunk, target
@@ -609,9 +740,53 @@ def scatter_to_volume(values, points, shape, fill=np.nan):
     return out
 
 
+def print_tree(path):
+    """The file's own contents: every array, its shape and its type.
+
+    Deliberately separate from the summary below. The summary says what the
+    MODEL will see, which is an interpretation; this says what is in the file,
+    which is a fact, and it is the first thing to look at when a dataset does
+    not behave the way it is expected to.
+    """
+    import h5py
+    with h5py.File(path, "r") as h:
+        print("%s\n" % path)
+        print("attributes")
+        for k, v in sorted(h.attrs.items()):
+            if isinstance(v, np.ndarray) and v.dtype.kind == "S":
+                v = [x.decode() for x in v]
+            print("  %-16s %s" % (k, v))
+        print("\narrays")
+        rows = []
+        h.visititems(lambda n, o: rows.append(
+            (n, getattr(o, "shape", None), getattr(o, "dtype", None)))
+            if hasattr(o, "shape") else None)
+        for n, shape, dt in rows:
+            print("  /%-22s %-24s %s" % (n, tuple(shape), dt))
+        if "samples" in h and h["samples"].attrs:
+            print("\nsamples attributes")
+            for k, v in sorted(h["samples"].attrs.items()):
+                print("  %-16s %s" % (k, v))
+    print()
+
+
+# =============================================================================
+#  RUN THIS FILE ON A DATASET TO SEE WHAT IS IN IT
+#  Two reports, in this order: what the FILE holds, then what the MODEL will be
+#  given. They are different questions and a dataset that surprises you is
+#  almost always a disagreement between the two.
+# =============================================================================
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        print("  python dataset_reader.py <dataset.h5>\n")
+        print("  Prints the file's arrays and attributes, then what the model "
+              "will be handed:\n  the species, the parameters, the switches, "
+              "the branch and trunk widths, and\n  the shapes of one sample.")
+        sys.exit(0)
     path = sys.argv[1] if len(sys.argv) > 1 else "dataset/dataset_reader.h5"
+    print_tree(path)
     tr, te = split_by_geometry(path)
     ds = PRT3DDataset(path, indices=tr)
     print("species     :", ds.species, " predicting:", ds.target_species)

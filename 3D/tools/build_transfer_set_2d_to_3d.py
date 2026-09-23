@@ -270,6 +270,13 @@ def main():
     ap.add_argument("--species", nargs="*", default=None,
                     help="species names; must match the 3D file")
     ap.add_argument("--stokes-iters", type=int, default=30000)
+    # AUDIT TRANSFER-08.
+    ap.add_argument("--keep-unsettled", action="store_true",
+                    help="keep runs that hit the transport step cap before "
+                         "settling. They are dropped by default: their last "
+                         "snapshot is where the integration stopped, not a "
+                         "steady state, and a network trained on them learns "
+                         "that shape as the answer")
     ap.add_argument("--adr-steps", type=int, default=None,
                     help="LEAVE UNSET. The transport runs until the field stops "
                          "changing. The old default of 200 stopped before the "
@@ -428,6 +435,32 @@ def main():
     if n_bad:
         raise SystemExit("%d physics complaint(s): this transfer set is not "
                          "usable, and writing it would hide that." % n_bad)
+
+    # AUDIT TRANSFER-08. Whether a run settled was recorded and then ignored,
+    # so runs that stopped at the step cap went into the transfer set beside
+    # the converged ones. Their last snapshot is as far as the integration got,
+    # not a steady state, and a network trained on them learns that shape as
+    # the answer. They are dropped by default now. --keep-unsettled puts them
+    # back for anyone who wants the transient on purpose, and either way the
+    # count is printed and the flag is written into the file.
+    n_unsettled = int((~settled).sum())
+    if n_unsettled and not a.keep_unsettled:
+        keep = np.where(settled)[0]
+        if keep.size == 0:
+            raise SystemExit(
+                "every one of the %d runs hit the step cap before settling. "
+                "Raise --adr-steps, or pass --keep-unsettled if the transient "
+                "is what you want." % S)
+        print("  dropping %d of %d runs that did not settle before the step "
+              "cap.\n  Pass --keep-unsettled to keep them." % (n_unsettled, S))
+        conc, tn, par, gi, vel = (conc[keep], tn[keep], par[keep],
+                                  gi[keep], vel[keep])
+        settled = settled[keep]
+        S = int(keep.size)
+    elif n_unsettled:
+        print("  keeping %d of %d runs that did not settle, because "
+              "--keep-unsettled was given. samples/settled marks them."
+              % (n_unsettled, S))
     scale = np.maximum(conc.reshape(S * T * C, -1).max(1).reshape(S, T, C).max((0, 1)), 1e-6)
     with h5py.File(a.out, "w") as h:
         h.attrs["n_samples"] = S
@@ -439,6 +472,10 @@ def main():
         h.attrs["z_walls"] = bool(a.z_walls)
         h.attrs["max_z_variation"] = float(max(zvar))
         h.attrs["nz_solve"] = int(nzs)
+        # AUDIT TRANSFER-08. So a reader can tell whether unsettled runs were
+        # kept without having to scan samples/settled.
+        h.attrs["kept_unsettled"] = bool(a.keep_unsettled)
+        h.attrs["n_unsettled"] = int((~settled).sum())
         gg = h.create_group("geom")
         gg.create_dataset("gid", data=np.arange(G, dtype=np.int32))
         gg.create_dataset("material", data=mat, compression="gzip")

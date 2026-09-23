@@ -67,18 +67,35 @@ DA_KEYS = ["da", "damkohler", "da_number", "da_bio"]
 T_KEYS = ["t", "time", "t_norm", "times"]
 
 
-def _find(d, keys, ndim=None):
+def _find(d, keys, ndim=None, allow_guess=False, what=""):
+    """Find an array by name, and only by name unless guessing is asked for.
+
+    AUDIT IMPORT2D-03. This used to fall back to "the first array with the
+    right number of dimensions" whenever the recognised names were absent. In
+    a file holding several same-shaped arrays that silently picked an
+    unrelated one -- a mask instead of a concentration, a temperature instead
+    of a velocity -- and nothing downstream could tell. The fallback is now
+    off unless the caller passes --guess-arrays, and when it does fire it
+    returns the name it guessed so the caller can say so out loud.
+    """
     low = {str(k).lower(): k for k in d}
     for k in keys:
         if k in low:
             v = d[low[k]]
             if ndim is None or getattr(v, "ndim", 0) in ndim:
                 return low[k], np.asarray(v)
-    if ndim is not None:
-        for k, orig in low.items():
-            v = np.asarray(d[orig])
-            if v.ndim in ndim:
-                return orig, v
+    if ndim is not None and allow_guess:
+        cands = [orig for orig in low.values()
+                 if np.asarray(d[orig]).ndim in ndim]
+        if len(cands) == 1:
+            return cands[0], np.asarray(d[cands[0]])
+        if len(cands) > 1:
+            raise ValueError(
+                "cannot tell which array is the %s: %d of them have the right "
+                "shape (%s) and none is named one of %s. Rename the array in "
+                "the file, or say which it is." %
+                (what or "field", len(cands), ", ".join(map(str, cands)),
+                 ", ".join(keys)))
     return None, None
 
 
@@ -139,15 +156,19 @@ def shape_conc(c, n_species):
     raise ValueError("concentration has %d dimensions, expected 2, 3 or 4" % c.ndim)
 
 
-def read_run(path, n_species):
-    z = np.load(path, allow_pickle=True)
+def read_run(path, n_species, guess=False, allow_pickle=False):
+    # AUDIT IMPORT2D-09. allow_pickle=True executes whatever the file asks it
+    # to on load, so a .npz from outside the group is a code-execution path.
+    # Plain numeric arrays do not need it. It is off unless the caller passes
+    # --allow-pickle and has decided the file is trusted.
+    z = np.load(path, allow_pickle=allow_pickle)
     d = {k: z[k] for k in z.files}
     r = {"path": path, "keys": list(d)}
-    gk, g = _find(d, GEOM_KEYS, ndim=(2,))
-    ck, c = _find(d, CONC_KEYS, ndim=(2, 3, 4))
+    gk, g = _find(d, GEOM_KEYS, ndim=(2,), allow_guess=guess, what="geometry")
+    ck, c = _find(d, CONC_KEYS, ndim=(2, 3, 4), allow_guess=guess, what="concentration")
     if ck == gk:
         ck, c = None, None
-    vk, v = _find(d, VEL_KEYS, ndim=(3, 4))
+    vk, v = _find(d, VEL_KEYS, ndim=(3, 4), allow_guess=guess, what="velocity")
     dk, gd = _find(d, GDF_KEYS, ndim=(2,))
     r.update(geom_key=gk, conc_key=ck, vel_key=vk, gdf_key=dk)
     r["geom"] = to_mask(g) if g is not None else None
@@ -157,6 +178,12 @@ def read_run(path, n_species):
     for name, keys in (("pe", PE_KEYS), ("da", DA_KEYS)):
         k, val = _find(d, keys)
         r[name] = float(np.asarray(val).ravel()[0]) if val is not None else None
+    # AUDIT IMPORT2D-04. The snapshot times, when the file records them. They
+    # are kept as they are here and normalised later, so a logarithmic ladder
+    # survives the import instead of being replaced by an even one.
+    tk, tv = _find(d, T_KEYS, ndim=(1,))
+    r["time_key"] = tk
+    r["t"] = np.asarray(tv, np.float64).ravel() if tv is not None else None
     return r
 
 
@@ -170,6 +197,16 @@ def main():
                          "FIRST, on a single example run.")
     add_param_layout_argument(ap)
     ap.add_argument("--n-species", type=int, default=1)
+    # AUDIT IMPORT2D-03 and IMPORT2D-09.
+    ap.add_argument("--guess-arrays", action="store_true",
+                    help="when an array is not named one of the recognised "
+                         "names, take the only one with the right shape. Off "
+                         "by default, because in a file with several such "
+                         "arrays the wrong one used to be picked in silence")
+    ap.add_argument("--allow-pickle", action="store_true",
+                    help="load .npz files that contain pickled objects. Off by "
+                         "default: loading a pickle runs whatever code it "
+                         "carries, so only turn this on for files you trust")
     ap.add_argument("--species", nargs="*", default=None)
     ap.add_argument("--pe", type=float, default=None,
                     help="use this Peclet for every run, if the files do not "
@@ -199,7 +236,8 @@ def main():
     runs, problems = [], []
     for f in files:
         try:
-            r = read_run(f, a.n_species)
+            r = read_run(f, a.n_species, guess=a.guess_arrays,
+                         allow_pickle=a.allow_pickle)
         except Exception as e:                                 # noqa: BLE001
             problems.append((f, str(e)))
             continue
@@ -318,6 +356,7 @@ def main():
     # identically empty and then labelled them t = 0.1 ... 1.0, and the network
     # was trained to predict nothing there.
     short = 0
+    synthesized = 0          # runs whose times had to be invented. AUDIT IMPORT2D-04
     for i, r in enumerate(ok):
         c = r["conc"]
         nt_i = c.shape[0]
@@ -325,9 +364,31 @@ def main():
         if nt_i < T:
             short += 1
             conc[i, nt_i:, :c.shape[1]] = c[-1][None, ..., None]
-        # the true normalised times of THIS run, not an assumed even grid
-        tn[i] = np.linspace(0, 1, T) if nt_i == T else np.concatenate(
-            [np.linspace(0, 1, nt_i), np.full(T - nt_i, 1.0)]).astype(np.float32)
+        # AUDIT IMPORT2D-04. The comment said "the true normalised times of
+        # THIS run", but both branches manufactured an evenly spaced ladder and
+        # threw away whatever the source file recorded. A run whose snapshots
+        # were logarithmically spaced, which is the usual case, was imported as
+        # though they were evenly spaced, and the trunk's time column then
+        # meant something different from the field beside it. The source times
+        # are used when the file has them, scaled to 0 to 1 and checked for
+        # being finite and increasing; the even ladder is the fallback, and the
+        # run records which it got.
+        src_t = r.get("t")
+        used_source = False
+        if src_t is not None and len(src_t) >= nt_i:
+            tt = np.asarray(src_t, np.float64)[:nt_i]
+            if np.all(np.isfinite(tt)) and np.all(np.diff(tt) > 0):
+                span = float(tt[-1] - tt[0])
+                tt = (tt - tt[0]) / span if span > 0 else np.linspace(0, 1, nt_i)
+                tn[i, :nt_i] = tt.astype(np.float32)
+                used_source = True
+        if not used_source:
+            tn[i, :nt_i] = np.linspace(0, 1, nt_i).astype(np.float32)
+            synthesized += 1
+        # a run held at its final state carries that time forward, so the
+        # padding is flat rather than a continuation of the ladder
+        if nt_i < T:
+            tn[i, nt_i:] = tn[i, nt_i - 1]
         if r["vel"] is not None:
             v = r["vel"]
             if v.ndim == 3 and v.shape[0] in (2, 3):
@@ -368,6 +429,15 @@ def main():
             sg.create_dataset("velocity", data=vel.astype(np.float16),
                               compression="gzip")
 
+    # AUDIT IMPORT2D-04. Say how many runs carried real times and how many did
+    # not, because a time column that was invented is not a measurement and the
+    # person reading the dataset has to know which they have.
+    if synthesized:
+        print("  %d of %d runs recorded no snapshot times, so an evenly spaced\n"
+              "  ladder was used for them. The rest kept the times in the file."
+              % (synthesized, S))
+    else:
+        print("  every run kept the snapshot times recorded in its own file")
     if short:
         print("\n   NOTE: %d of %d runs had fewer than %d snapshots. They are "
               "held at their final state for the remainder rather than padded "

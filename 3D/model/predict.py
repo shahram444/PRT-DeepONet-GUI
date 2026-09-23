@@ -48,7 +48,11 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+_ROOT = os.path.dirname(os.path.dirname(HERE))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from deeponet_model import PRT_DeepONet3D                                  # noqa: E402
+from prt_core import conventions                                          # noqa: E402
 from make_figures import standard_panels, render_2d, render_3d               # noqa: E402
 import make_figures                                                          # noqa: E402
 
@@ -59,11 +63,42 @@ PORE = 2
 def load_geometry(args):
     """Returns (material, gdf, edt). Computes the geodesic field if absent."""
     p = args.geometry
-    if p.endswith(".npz"):
+    if p.endswith(".h5") or p.endswith(".hdf5"):
+        # A dataset carries its rocks already, with the geodesic and the wall
+        # distance beside them, so pulling one out by hand into a .npz first
+        # was busywork that also invited the wrong rock to be used. --geom-index
+        # says which one; the default is the first.
+        import h5py
+        with h5py.File(p, "r") as h:
+            g = h["geom"]
+            n = int(g["material"].shape[0])
+            i = int(args.geom_index)
+            if not -n <= i < n:
+                sys.exit("--geom-index %d, but this file holds %d geometries "
+                         "(0 to %d)" % (i, n, n - 1))
+            mat = np.asarray(g["material"][i]).astype(np.uint8)
+            gdf = (np.nan_to_num(np.asarray(g["gdf"][i])).astype(np.float32)
+                   if "gdf" in g else None)
+            edt = (np.asarray(g["edt"][i]).astype(np.float32)
+                   if "edt" in g else None)
+            gid = int(np.asarray(g["gid"][i])) if "gid" in g else i
+        print("  geometry %d of %d from %s (gid %d)" % (i % n, n, p, gid))
+    elif p.endswith(".npz"):
         z = np.load(p, allow_pickle=True)
         mat = z["material"].astype(np.uint8)
         gdf = np.nan_to_num(z["gdf"]).astype(np.float32) if "gdf" in z else None
         edt = z["edt"].astype(np.float32) if "edt" in z else None
+    elif p.endswith(".vti"):
+        # CompLaB's own geometry echo, so a rock can go straight from a run
+        # folder into a prediction without a conversion step.
+        sys.path.insert(0, os.path.join(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))), "tools"))
+        from collect_complab_output import read_vti
+        arrays, dims = read_vti(p)
+        if not arrays:
+            sys.exit("no arrays in %s" % p)
+        mat = np.asarray(list(arrays.values())[0]).astype(np.uint8)
+        gdf = edt = None
     else:
         if not (args.nx and args.ny and args.nz):
             sys.exit("a raw .dat needs --nx --ny --nz")
@@ -159,7 +194,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--geometry", required=True, help=".npz from build_geometry_3d.py, or a raw geometry.dat")
+    ap.add_argument("--geometry", required=True,
+                    help="a .npz from build_geometry_3d.py, a rock out of a "
+                         ".h5 dataset, a CompLaB .vti, or a raw geometry.dat "
+                         "with --nx --ny --nz")
+    ap.add_argument("--geom-index", type=int, default=0,
+                    help="which rock, when --geometry is a .h5 dataset")
     ap.add_argument("--nx", type=int); ap.add_argument("--ny", type=int); ap.add_argument("--nz", type=int)
     ap.add_argument("--pe", type=float, required=True)
     ap.add_argument("--da-bio", type=float, required=True)
@@ -210,6 +250,18 @@ def main():
             "  or a flow surrogate (Geo-ONet), which is the whole point of the switch:\n"
             "  somebody else owns geometry -> flow, we own flow -> concentration."
             % _cfg["label"])
+    # The chemistry and the distance convention this checkpoint was trained
+    # under. Neither changes a tensor shape, so neither is caught by the grid
+    # check further down: without them recorded, a model trained on one
+    # chemistry predicts another with every shape agreeing.
+    _distance_convention = ck.get("distance_convention", "ours")
+    if ck.get("reaction"):
+        print("  reaction : %s, distance convention %r"
+              % (ck["reaction"], _distance_convention))
+    else:
+        print("  reaction : not recorded; assuming the distance convention "
+              "%r, which is what our own dataset builders store"
+              % _distance_convention)
     print("  switches : %s" % _cfg["label"])
     print("  branch1  : %s" % ", ".join(_cfg["branch_ch"]))
     print("  trunk    : %s" % ", ".join(_cfg["trunk_cols"]))
@@ -371,7 +423,21 @@ def main():
         elif name == "t":
             cols.append(np.full(len(pore_idx), args.t_norm, np.float32))
         elif name == "gdf":
-            cols.append(gdf[xi, yi, zi] / max(nx - 1, 1))
+            # Under which convention? The dataset builders store the raw
+            # geodesic walk and divide by nx - 1 here, which is the convention
+            # called 'ours': zero at the inlet, rising downstream. The
+            # published notebooks build a column that is ONE at the inlet and
+            # falls, and the two are anti-correlated. Feeding a trunk the wrong
+            # one changes no shape and raises nothing; it just predicts badly.
+            # So the checkpoint's own record decides, and when it names a
+            # published convention the column is rebuilt from the geometry
+            # rather than rescaled, because the two differ in what they scale
+            # over as well as in direction.
+            if _distance_convention == "ours":
+                cols.append(gdf[xi, yi, zi] / max(nx - 1, 1))
+            else:
+                col = conventions.distance_column(mat, _distance_convention)
+                cols.append(col[xi, yi, zi])
         elif name == "edt":
             cols.append(edt[xi, yi, zi] / max(nx - 1, 1))
         elif name == "dwall":

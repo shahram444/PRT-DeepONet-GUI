@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 """The geometry descriptors the velocity operator needs, in two and three dimensions.
 
+NEW IN THE FLOW VERSION
+    Nothing here has a counterpart in the 2D release. That code gives its trunk one
+    geometry number, the geodesic distance, and asks the branch CNN to work out the
+    rest of the pore structure for itself from the raw mask. This file computes three
+    descriptors that say directly what the mask only implies: how wide the pore is
+    here, how wide the widest path through here is, and how far the nearest wall is.
+
+    They exist because of a measured failure, not a hunch: a network given the mask and
+    the geodesic distance alone cannot separate a preferential channel from a dead
+    pocket beside it, since both sit the same distance from the inlet. In 2D that costs
+    little, because a 148 by 64 slice has few places to hide. In 3D the channels carry
+    almost all of the flow and the pockets carry almost none, so the same confusion is
+    the difference between a useful prediction and an average one.
+
 The geodesic distance already in this project answers a transport question: how far
 must a molecule travel from the inlet to reach here, through open pore space. It says
 nothing about how fast anything moves along that path, which is why a network given
@@ -305,7 +319,13 @@ def zscore_stats(maps):
     construction and are excluded, because including them would move the mean with the
     porosity of the rock rather than with the pore size.
     """
-    vals = np.concatenate([m[m > 0].ravel() for m in maps if (m > 0).any()])
+    # AUDIT FLOW-03. np.concatenate raises ValueError on an empty list, so a
+    # campaign in which every map happened to be all zeros crashed here rather
+    # than returning the neutral scaling. Collect first, test, then concatenate.
+    parts = [m[m > 0].ravel() for m in maps if (m > 0).any()]
+    if not parts:
+        return 0.0, 1.0
+    vals = np.concatenate(parts)
     if vals.size == 0:
         return 0.0, 1.0
     sd = float(vals.std())

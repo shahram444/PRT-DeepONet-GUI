@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 """Train the velocity operator on a dataset this project built.
 
+NEW IN THE FLOW VERSION
+    The 2D release trains one thing: geometry and two dimensionless numbers to
+    concentration. It never trains a flow model, because on a slice at Peclet 1 to 10
+    the flow is close enough to uniform that the concentration operator absorbs it.
+
+    This trains the optional first half of the flow-aware path. It is a separate
+    training run on purpose, so that the control, which is the concentration model
+    trained on the SIMULATED velocity, can be compared with the full pipeline, which is
+    the same model trained on the PREDICTED one. Without that control there is no way
+    to tell whether the flow model helped or whether knowing the flow at all did.
+
+    It also reads our own HDF5 layout rather than the released split.pt and folder of
+    per run .npz files, so the campaign that trains the concentration network trains
+    this one, and the two cannot drift apart over which rocks are held out.
+
 The released implementation reads a fixed split.pt and a folder of per run npz files.
 This reads our own HDF5 layout instead, so the same campaign that trains the
 concentration network trains this one, and neither can drift from the other's idea of
@@ -85,7 +100,14 @@ import flow_features as ff
 from harmonic_pressure import harmonic_gradient
 
 
-# ------------------------------------------------------------------ reading the file
+# =============================================================================
+#  READING THE FILE
+#  Everything the velocity operator needs comes out of the same dataset.h5 the
+#  concentration model trains on. The descriptors are z scored with the
+#  constants stored beside them, never with constants refitted here, so a rock
+#  in the training split and a rock in the held-out split of the same width
+#  look the same to the network.
+# =============================================================================
 def _unscale(dset, group, name):
     """Read a stored field, undoing the scale attribute if the writer left one."""
     arr = np.asarray(dset)
@@ -223,7 +245,12 @@ def read_dataset(path, condition="pe", buffer=10, pressure="solve", unet_path=No
     return out
 
 
-# ---------------------------------------------------------------------- assembling
+# =============================================================================
+#  ASSEMBLING THE TENSORS
+#  The split is by GEOMETRY, as everywhere else in this project. Splitting by
+#  sample would put the same rock on both sides and every held-out number below
+#  would be optimistic by an amount nobody could estimate afterwards.
+# =============================================================================
 def build_tensors(D, train_g, test_g, verbose=True):
     """Turn the read arrays into two TensorDatasets, scaled once over training only.
 
@@ -308,7 +335,13 @@ def build_tensors(D, train_g, test_g, verbose=True):
     return TensorDataset(*tr_t), TensorDataset(*te_t[:5]), stats
 
 
-# ------------------------------------------------------------------------ training
+# =============================================================================
+#  TRAINING
+#  Two terms in the loss: the velocity itself, and a divergence penalty weighted
+#  by lam. The second is what stops the network producing a field that matches
+#  voxel by voxel and does not conserve mass, which looks correct in a picture
+#  and transports nothing sensibly.
+# =============================================================================
 def train(model, train_ds, test_ds, ratios, lam=10.0, epochs=300, lr=1e-3,
           batch=25, patience=15, device="cpu", out_dir=None, verbose=True):
     tl = DataLoader(train_ds, batch_size=batch, shuffle=True)
@@ -373,17 +406,25 @@ def train(model, train_ds, test_ds, ratios, lam=10.0, epochs=300, lr=1e-3,
 
 
 @torch.no_grad()
-def report(model, test_ds, stats, n_comp, device="cpu", n=8):
+def report(model, test_ds, stats, n_comp, device="cpu", n=None):
     """Per sample NRMSE of the velocity magnitude, in physical units.
 
     Normalised by the range of the true field over that sample's own pore space, which
     is what the paper reports, so the numbers are comparable with theirs.
+
+    AUDIT VELTRAIN-09. n used to default to 8, so the percentiles and the worst
+    case that got printed as the final held-out result described the first
+    eight samples in index order and nothing else. It now covers the whole
+    held-out set by default, and when a caller does limit it the output says
+    how many of how many were used, so a partial number can never be read as a
+    complete one.
     """
     mu = np.asarray(stats["vel_mu"], np.float32)
     sd = np.asarray(stats["vel_sd"], np.float32)
     model.eval()
     vals = []
-    for i in range(min(n, len(test_ds))):
+    n_use = len(test_ds) if n is None else min(int(n), len(test_ds))
+    for i in range(n_use):
         b1, b2, tr, y, roi = test_ds[i]
         p = model(b1[None].to(device), b2[None].to(device), tr[None].to(device))[0].cpu().numpy()
         g = y.numpy()
@@ -393,7 +434,11 @@ def report(model, test_ds, stats, n_comp, device="cpu", n=8):
         rng = gm[m].max() - gm[m].min()
         vals.append(float(np.sqrt(np.mean((pm[m] - gm[m]) ** 2)) / (rng + 1e-30)))
     vals = np.array(vals)
-    print("\nheld-out velocity magnitude NRMSE over %d samples" % len(vals))
+    if n_use == len(test_ds):
+        print("\nheld-out velocity magnitude NRMSE over all %d samples" % len(vals))
+    else:
+        print("\nheld-out velocity magnitude NRMSE over %d of %d samples "
+              "(a subset: not the held-out score)" % (len(vals), len(test_ds)))
     for q in (25, 50, 75, 90):
         print("  %2dth percentile  %.4f" % (q, float(np.percentile(vals, q))))
     print("  worst            %.4f" % float(vals.max()))

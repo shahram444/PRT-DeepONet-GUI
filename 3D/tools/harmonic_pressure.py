@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """The harmonic pressure field on a pore space, and its gradient.
 
+NEW IN THE FLOW VERSION
+    The 2D release has no flow field of any kind. Its trunk takes position, time and
+    the geodesic distance, and the transport is left entirely to the Peclet number.
+    That works while the pore structure is a slice and every path through it is much
+    the same width.
+
+    It stops working in 3D, where the flow picks a few channels and ignores the rest,
+    so this version gives the network a cheap standing-in for the driving force. The
+    field solved here is harmonic, not the real Stokes pressure: it is the solution of
+    Laplace's equation on the pore space, which costs one linear solve and does not
+    depend on the flow rate, so it is computed once per rock and reused at every
+    Reynolds number. That is the whole reason it can be afforded at all.
+
 The velocity operator's trunk is given the direction and relative strength of the
 driving force at each point. That comes from a HARMONIC pressure field: the solution of
 Laplace's equation on the pore space, held at 1 on the inlet face and 0 on the outlet,
@@ -150,16 +163,45 @@ def harmonic_gradient(pore, normalise=True):
     P, _ = harmonic_pressure(pore)
     ndim = pore.ndim
     out = np.zeros((ndim,) + pore.shape, np.float32)
+
+    # AUDIT PRESS-04. The central difference used to read both neighbours
+    # whatever they were. A pore voxel against a grain therefore differenced
+    # its own pressure against a stored zero, which is not the pressure in the
+    # grain -- there is no pressure in the grain -- and produced a large
+    # gradient pointing into the wall. Zeroing the solid afterwards did not
+    # help, because the bad value was in the PORE voxel next to it.
+    #
+    # The no-flux wall condition says the pressure has no gradient through the
+    # wall, so the right thing at such a voxel is a one-sided difference using
+    # the neighbours that exist. Where both neighbours are grain the gradient
+    # along that axis is zero, which is what a voxel in a one-voxel-wide slot
+    # physically has.
     for ax in range(ndim):
-        if pore.shape[ax] < 3:
+        if pore.shape[ax] < 2:
             continue
-        sl_c = [slice(None)] * ndim
-        sl_p = [slice(None)] * ndim
-        sl_m = [slice(None)] * ndim
-        sl_c[ax] = slice(1, -1)
-        sl_p[ax] = slice(2, None)
-        sl_m[ax] = slice(None, -2)
-        out[ax][tuple(sl_c)] = (P[tuple(sl_p)] - P[tuple(sl_m)]) * 0.5
+        # neighbour pressures and neighbour validity, shifted along this axis
+        def shift(a, k):
+            return np.roll(a, k, axis=ax)
+
+        Pp, Pm = shift(P, -1), shift(P, 1)
+        okp, okm = shift(pore, -1), shift(pore, 1)
+        # np.roll wraps, so the two faces of the block are not neighbours
+        edge_hi = [slice(None)] * ndim
+        edge_lo = [slice(None)] * ndim
+        edge_hi[ax] = slice(-1, None)
+        edge_lo[ax] = slice(0, 1)
+        okp[tuple(edge_hi)] = False
+        okm[tuple(edge_lo)] = False
+
+        both = okp & okm & pore
+        onlyp = okp & ~okm & pore
+        onlym = okm & ~okp & pore
+
+        g = np.zeros(pore.shape, np.float32)
+        g[both] = (Pp[both] - Pm[both]) * 0.5     # central, both neighbours pore
+        g[onlyp] = Pp[onlyp] - P[onlyp]           # one-sided, forward
+        g[onlym] = P[onlym] - Pm[onlym]           # one-sided, backward
+        out[ax] = g
     out[:, ~pore] = 0.0
     if normalise:
         m = np.abs(out[:, pore]).max() if pore.any() else 0.0
@@ -249,6 +291,21 @@ def _self_test():
           float(np.abs(gn).max()) <= 1.0 + 1e-6 and float(gn[0][10, 5]) < 0)
     check("normalisation leaves solid voxels at exactly zero",
           float(np.abs(gn[:, ~pore]).max()) == 0.0)
+
+    # AUDIT PRESS-04 regression. A straight channel has no pressure gradient
+    # across it. Before the one-sided fix the pore voxels against the wall
+    # differenced their own pressure against the zero stored in the grain and
+    # reported a large wall-normal gradient, which is a force that does not
+    # exist. This fails if it ever comes back.
+    chan = np.zeros((12, 7), bool)
+    chan[:, 2:5] = True
+    gg = harmonic_gradient(chan, normalise=False)
+    check("a straight channel has no gradient across it",
+          float(np.abs(gg[1][chan]).max()) < 1e-6,
+          "max %.3e" % float(np.abs(gg[1][chan]).max()))
+    check("and along it the gradient is the uniform ramp",
+          np.allclose(gg[0][chan], -1.0 / 11.0, atol=1e-6),
+          "mean %.4f" % float(gg[0][chan].mean()))
 
     print("\n" + ("Everything passed." if ok else "SOMETHING FAILED, read the lines above."))
     return 0 if ok else 1

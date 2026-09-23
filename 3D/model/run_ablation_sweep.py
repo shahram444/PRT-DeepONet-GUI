@@ -36,13 +36,26 @@ import argparse, json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+# =============================================================================
+#  ONE CONFIGURATION AT A TIME
+#  Each switch combination is a full training run in its own directory, started
+#  as a subprocess with the same train.py everything else uses. Running them in
+#  one process would share torch state between configurations, and a sweep whose
+#  runs are not independent compares nothing.
+# =============================================================================
 def run(cmd):
     print("\n$ " + " ".join(cmd), flush=True)
-    r = subprocess.run(cmd)
+    r = subprocess.run(cmd)          # inherits stdout, so a Slurm log shows progress
     if r.returncode:
         raise SystemExit("command failed: %s" % " ".join(cmd))
 
 
+# =============================================================================
+#  WHAT GETS SWEPT
+#  The switches are compared against EVERY SWITCH OFF, which reproduces the
+#  published behaviour. That baseline is the point of the sweep: a switch is
+#  worth having only if it beats the code that did not have it.
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="the 3D dataset")
@@ -125,6 +138,12 @@ def main():
     summarise(os.path.join(a.out, "compare", "rmse_table.csv"), a.out)
 
 
+# =============================================================================
+#  THE TABLE
+#  One row per configuration, read back from each run's summary.json rather than
+#  from anything this script remembers. If a run died, its row is absent and the
+#  table says so, which is the honest report.
+# =============================================================================
 def summarise(csv_path, out):
     """Mean RMSE per configuration, overall and split by Peclet decade."""
     import csv as _csv

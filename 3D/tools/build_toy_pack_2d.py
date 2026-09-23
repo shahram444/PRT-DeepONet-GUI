@@ -68,6 +68,13 @@ from build_dataset_2d import (blob_2d, keep_spanning_cluster, percolates,   # no
 SOLID, WALL, PORE = 0, 1, 2
 
 
+# =============================================================================
+#  WHY THIS IMPORTS FROM build_dataset_2d RATHER THAN COPYING
+#  The toy pack has to be built by the SAME code that builds a real 2D dataset,
+#  or it stops being a test of anything. Every geometry and flow routine above
+#  is imported, not reimplemented: what this file adds is small sizes and a
+#  folder layout, and nothing else.
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="./toy2d", help="folder to create")
@@ -136,14 +143,23 @@ def main():
     # a different seed stream, so these cannot collide with the training set
     rng = np.random.default_rng(a.seed + 100000)
     made = 0
-    names = "ABCDEFGH"
+    # AUDIT TOY2D-10. This was the fixed string "ABCDEFGH", so asking for more
+    # than eight prediction structures indexed past its end. The names now grow
+    # with the request: A to Z, then AA, AB and so on, for any count.
+    def _name(i):
+        s = ""
+        i += 1
+        while i:
+            i, r = divmod(i - 1, 26)
+            s = chr(ord("A") + r) + s
+        return s
     while made < a.n_predict:
         phi = 0.58 + 0.22 * rng.random()
         g = blob_2d((nx, ny), phi, rng, sigma=3.0)
         g, _ = keep_spanning_cluster(g)
         if not percolates(g):
             continue
-        nm = names[made]
+        nm = _name(made)
         v = stokes_d2q9(g, nit=a.stokes_iters)
         np.savez_compressed(
             os.path.join(pred_dir, "geom_%s.npz" % nm),

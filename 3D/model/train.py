@@ -2,6 +2,32 @@
 """
 train.py — train the 3D PRT-DeepONet on dataset_reader.h5.
 
+WHAT CHANGED FROM THE 2D VERSION
+    The recipe is the 2D notebook's recipe: AdamW, Huber loss, mixed precision,
+    cosine schedule, early stopping. Four things around it changed, and each one
+    changed because of a number that was wrong and did not look wrong.
+
+    THE SPLIT IS BY GEOMETRY, AND THERE ARE THREE OF THEM. The notebook splits
+    by sample, which puts snapshots of the same rock on both sides. This splits
+    whole rocks, into train, validation and test: validation chooses the
+    checkpoint, and the test set is opened once at the end and is the number
+    that gets reported. On one real run those two numbers were 0.3446 and
+    0.3590, so reporting the first would have been reporting the score the
+    checkpoint was selected on.
+
+    THE SCALINGS ARE FITTED ON THE TRAINING ROWS ONLY. The velocity mean and
+    standard deviation, and the concentration scale, used to come from the whole
+    file, which lets a held-out run set the size of a training target.
+
+    WHAT THE MODEL IS FOR IS WRITTEN DOWN. Which chemistry, and which distance
+    convention. Neither changes a tensor shape, which is exactly why they have
+    to be recorded: without them a model trained on one reaction loads into a
+    run predicting another, every shape agrees, and the field is merely wrong.
+
+    2D AND 3D ARE THE SAME COMMAND. A dataset whose third grid number is 1 is a
+    2D problem, and the branch, the trunk and the channels follow the data. There
+    is no 2D fork of this script to keep in step.
+
     python train.py --data ../dataset/dataset_reader.h5 --out ./runs/gdf
     python train.py --data ... --out ./runs/edt  --distance edt      # ablation
     python train.py --data ... --out ./runs/none --distance none     # ablation
@@ -26,9 +52,72 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from dataset_reader import (PRT3DDataset, split_by_geometry,        # noqa: E402
+                            split_three_ways,
                             resolve_switches)
 from deeponet_model import PRT_DeepONet3D, count_parameters              # noqa: E402
+from prt_core import conventions, reactions                              # noqa: E402
+
+
+def reaction_agreement(r, ds):
+    """Complaints about a --reaction that does not describe this dataset.
+
+    The dataset is authoritative for the WIDTHS: the parameter branch is built
+    from the columns the file actually holds, so naming the wrong chemistry
+    cannot change the shape of anything. What it changes is what the checkpoint
+    CLAIMS, and a checkpoint that claims the wrong chemistry is how a model
+    trained on methane and sulfate gets used to predict acetate later, with
+    every shape agreeing and the numbers meaningless.
+
+    So this reports rather than raises: the run continues, the disagreement is
+    printed, and the checkpoint records what was really used.
+    """
+    said = []
+    if len(r.params) != len(ds.param_names):
+        said.append("%s has %d dimensionless numbers (%s) and this dataset "
+                    "carries %d (%s)"
+                    % (r.key, len(r.params), ", ".join(r.param_names),
+                       len(ds.param_names), ", ".join(ds.param_names)))
+    unknown = [s for s in ds.species if s not in r.species]
+    if unknown:
+        said.append("this dataset holds %s, and %s does not list %s"
+                    % (", ".join(ds.species), r.key, ", ".join(unknown)))
+    if r.steady and getattr(ds, "with_time", False):
+        said.append("%s is a steady state and this dataset has a time column"
+                    % r.key)
+    return said
+
+
+def training_target_scale(h5path, train_idx, ds):
+    """The concentration scale, fitted on the TRAINING rows only.
+
+    AUDIT DATA-04. The scale stored in the dataset is the maximum over every
+    run in the file, so normalising the target with it lets a held-out run set
+    the size of a training target. That is a small leak, but it is a leak, and
+    it is free to remove: one pass over the training concentrations.
+
+    The file's own scale stays untouched and is still the physical unit a
+    prediction is multiplied back by. What changes is only what the target is
+    divided by while training.
+
+    Returns one positive float per channel, never zero, so a channel that is
+    flat everywhere does not turn into a division by nothing.
+    """
+    import h5py
+    with h5py.File(h5path, "r") as h:
+        conc = h["samples/conc"]
+        n_ch = int(conc.shape[2])
+        peak = np.zeros(n_ch, np.float64)
+        for i in np.asarray(train_idx, dtype=int):
+            block = np.abs(np.asarray(conc[int(i)], np.float32))   # (T, C, ...)
+            peak = np.maximum(peak, block.reshape(block.shape[0], n_ch, -1)
+                                          .max(axis=(0, 2)))
+    stored = np.asarray(ds.conc_scale, np.float64)
+    out = np.where(peak > 0, peak, np.where(stored > 0, stored, 1.0))
+    return out.astype(np.float32)
 
 
 def evaluate(model, loader, device):
@@ -56,7 +145,38 @@ def main():
                          "has ONE output field, as in the 2D release, so one "
                          "model is trained per species. Defaults to the first "
                          "species in the dataset.")
+    # Which chemistry this run is for, and how the trunk's distance column is
+    # scaled. Neither changes a tensor shape: both are recorded in the
+    # checkpoint so that evaluate.py and predict.py can refuse a mismatch by
+    # name instead of running happily on the wrong one.
+    reactions.add_argument(ap)
+    ap.add_argument("--distance-convention", default=None,
+                    choices=list(conventions.DISTANCE_CONVENTIONS),
+                    help="how the trunk's distance column is scaled. Defaults "
+                         "to the one the chosen reaction was fitted under: "
+                         "'ours' is zero at the inlet, the published two are "
+                         "one there, and they are anti-correlated, so a warm "
+                         "start under the wrong one trains against a column "
+                         "running backwards")
     ap.add_argument("--with-velocity", action="store_true")
+    # AUDIT TRAIN-04. Validation chooses the checkpoint, test is opened once
+    # afterwards and is what gets reported. The old arrangement used one set
+    # for both, which makes the reported number optimistic by an unknown
+    # amount. --two-way-split restores the old behaviour for a dataset too
+    # small to divide three ways, and says so in the output and the summary.
+    ap.add_argument("--val-frac", type=float, default=0.15,
+                    help="share of GEOMETRIES used to choose the checkpoint")
+    ap.add_argument("--two-way-split", action="store_true",
+                    help="one held-out set for both selection and reporting. "
+                         "Only for a dataset with too few geometries to split "
+                         "three ways; the reported score is then the score the "
+                         "checkpoint was chosen on")
+    # AUDIT DATA-04. The scale stored in the dataset is computed over every run
+    # in the file, test rows included. 'train' refits it on the training split
+    # alone, which costs one pass over the training concentrations.
+    ap.add_argument("--target-scale", choices=["train", "file"], default="train",
+                    help="what the target is divided by: a scale fitted on the "
+                         "training split, or the one stored in the file")
 
     # ---------------------------------------------------------------- switches
     # All three default OFF.  With all three off this script behaves exactly as
@@ -156,7 +276,23 @@ def main():
     if args.geom_features and args.velocity_informed == "off":
         raise SystemExit("--geom-features only does anything with --velocity-informed")
 
-    tr_idx, te_idx = split_by_geometry(args.data, frac=args.test_frac, seed=args.seed)
+    # ---------------------------------------------------------------- the split
+    # AUDIT TRAIN-04. Three disjoint sets of whole geometries. The exact
+    # geometry ids go into the checkpoint, so evaluate.py can reproduce the
+    # test set instead of recomputing it from a fraction and a seed that may
+    # have moved since.
+    if args.two_way_split:
+        tr_idx, te_idx = split_by_geometry(args.data, frac=args.test_frac,
+                                           seed=args.seed)
+        va_idx = te_idx
+        split_ids = None
+        print("split       : TWO-WAY. The reported score is the score the "
+              "checkpoint was chosen on.")
+    else:
+        tr_idx, va_idx, te_idx, split_ids = split_three_ways(
+            args.data, val_frac=args.val_frac, test_frac=args.test_frac,
+            seed=args.seed)
+
     common = dict(n_points=args.n_points, with_velocity=args.with_velocity,
                   distance=args.distance, with_time=args.with_time,
                   flow_proxy=args.flow_proxy, dim_free=args.dim_free,
@@ -166,17 +302,46 @@ def main():
                   geom_features=args.geom_features,
                   species=args.species)
     train_ds = PRT3DDataset(args.data, indices=tr_idx, **common)
-    test_ds = PRT3DDataset(args.data, indices=te_idx, **common)
+
+    # ------------------------------------------- statistics, fitted on train only
+    # AUDIT DATA-05. The velocity scaling is fitted here, on the training
+    # split, and handed to the other splits. Fitting it separately per split
+    # meant a held-out rock was scaled by numbers the network had never been
+    # trained under.
+    fitted_vel = None
+    if any(c in ("ux", "uy", "uz") for c in train_ds.branch_ch):
+        mu, sd = train_ds.vel_stats
+        fitted_vel = (mu, sd)
+        print("velocity    : scaled by the training split, mu %s sd %s"
+              % (np.array2string(mu, precision=3),
+                 np.array2string(sd, precision=3)))
+
+    # AUDIT DATA-04. Same argument for the concentration scale.
+    fitted_scale = None
+    if args.target_scale == "train":
+        fitted_scale = training_target_scale(args.data, tr_idx, train_ds)
+        print("target scale: fitted on the training split, %s"
+              % np.array2string(fitted_scale, precision=4))
+    else:
+        print("target scale: the one stored in the file, over every run in it")
+
+    common_fitted = dict(common, vel_stats=fitted_vel, target_scale=fitted_scale)
+    # rebuild the training set so it uses the same scale it was fitted from
+    train_ds = PRT3DDataset(args.data, indices=tr_idx, **common_fitted)
+    val_ds = PRT3DDataset(args.data, indices=va_idx, **common_fitted)
+    test_ds = (val_ds if args.two_way_split
+               else PRT3DDataset(args.data, indices=te_idx, **common_fitted))
 
     dl = lambda ds, sh: torch.utils.data.DataLoader(
         ds, batch_size=args.batch_size, shuffle=sh, num_workers=args.workers,
         pin_memory=(device.type == "cuda"), drop_last=False)
+    val_loader = dl(val_ds, False)
     test_loader = dl(test_ds, False)
 
     # ------------------------------------------------ SWITCH B: mix in 2D data
     ds2d = None
     if args.transfer_2d:
-        ds2d = PRT3DDataset(args.transfer_2d, source_tag=1, **common)
+        ds2d = PRT3DDataset(args.transfer_2d, source_tag=1, **common_fitted)
         bad = []
         if tuple(ds2d.shape) != tuple(train_ds.shape):
             bad.append("grid %s vs %s" % (tuple(ds2d.shape), tuple(train_ds.shape)))
@@ -225,11 +390,36 @@ def main():
               "no pretrained trunk to freeze, so it would just cripple training")
     if args.init_from:
         pre = torch.load(args.init_from, map_location="cpu", weights_only=False)
-        missing, unexpected = model.load_state_dict(pre["model"], strict=False)
+        # AUDIT, found while reading the code and reproduced directly. The
+        # message below used to promise that "shape changes are skipped, not
+        # silently reshaped". load_state_dict does not do that: it RAISES on a
+        # size mismatch whatever strict is set to, so a 2D-mode warm start fed
+        # to a 3D run died on the first convolution with no explanation. The
+        # mismatched tensors are dropped here, deliberately and out loud, and
+        # the ones that fit are loaded.
+        own = dict(model.state_dict())
+        pre_sd = pre["model"]
+        clash = [(k, tuple(v.shape), tuple(own[k].shape))
+                 for k, v in pre_sd.items()
+                 if k in own and tuple(own[k].shape) != tuple(v.shape)]
+        usable = {k: v for k, v in pre_sd.items()
+                  if not (k in own and tuple(own[k].shape) != tuple(v.shape))}
+        missing, unexpected = model.load_state_dict(usable, strict=False)
         print("switch B    : warm-started from %s" % args.init_from)
+        if clash:
+            print("              %d tensor(s) had the right name and the wrong "
+                  "shape and were NOT loaded:" % len(clash))
+            for _k, _a, _b in clash[:6]:
+                print("                %-36s %s -> %s" % (_k, _a, _b))
+            print("              A checkpoint saved in 2D mode cannot warm-start "
+                  "a 3D run: its convolutions")
+            print("              are 3x3 and this model wants 3x3x3. The route "
+                  "that does work is")
+            print("              --dim-free on an extruded transfer set, which "
+                  "is 3D-shaped already.")
+            print("              See 3D/SWITCHES.md.")
         if missing or unexpected:
-            print("              %d missing, %d unexpected tensors (shape changes "
-                  "are skipped, not silently reshaped)"
+            print("              %d missing, %d unexpected tensors"
                   % (len(missing), len(unexpected)))
         if args.freeze_trunk:
             for q in model.trunk.parameters():
@@ -239,7 +429,15 @@ def main():
                   "the dimension-independent reaction response; only the "
                   "geometry branch is retrained." % (n_frozen / 1e6))
 
+    # ------------------------------------------------- the chemistry, by name
+    reaction = reactions.resolve(args.reaction)
+    convention = args.distance_convention or reaction.distance_convention
     print("device      : %s" % device)
+    print("reaction    : %s  (%s)" % (reaction.key, reaction.title))
+    print("distance    : convention %r, %s"
+          % (convention, conventions.describe(convention)))
+    for line in reaction_agreement(reaction, train_ds):
+        print("              NOTE: %s" % line)
     print("species     : predicting %r  (this file holds %s)"
           % (train_ds.target_species, ", ".join(train_ds.species)))
     print("switches    : %s" % train_ds.cfg["label"])
@@ -251,8 +449,15 @@ def main():
              ", da = " + train_ds.da_column if train_ds.da_column else ""))
     print("trunk inputs: %s   (snapshots per run: %d)"
           % (", ".join(train_ds.trunk_cols), train_ds.T))
-    print("train/test  : %d / %d samples over disjoint geometries"
-          % (len(train_ds), len(test_ds)))
+    if args.two_way_split:
+        print("train/test  : %d / %d samples over disjoint geometries"
+              % (len(train_ds), len(test_ds)))
+    else:
+        print("train/val/test: %d / %d / %d samples over three disjoint "
+              "sets of geometries" % (len(train_ds), len(val_ds), len(test_ds)))
+        print("              geometries  train %d, val %d, test %d"
+              % (len(split_ids["train"]), len(split_ids["val"]),
+                 len(split_ids["test"])))
 
     opt = torch.optim.AdamW([q for q in model.parameters() if q.requires_grad],
                             lr=args.lr)
@@ -274,22 +479,35 @@ def main():
         sched.step()
         tr = tot / max(n, 1)
 
+        # AUDIT TRAIN-04. This is the VALIDATION set. It chooses the
+        # checkpoint and nothing else. The test set is not touched until the
+        # loop has finished.
         model.eval(); tot = n = 0
         with torch.no_grad():
-            for b1, b2, tk, y in test_loader:
+            for b1, b2, tk, y in val_loader:
                 b1, b2, tk, y = (t.to(device, non_blocking=True) for t in (b1, b2, tk, y))
                 with torch.autocast("cuda", enabled=(device.type == "cuda")):
                     loss = crit(model(b1, b2, tk), y)
                 tot += loss.item() * b1.size(0); n += b1.size(0)
         te = tot / max(n, 1)
-        hist.append(dict(epoch=ep, train=tr, test=te, lr=sched.get_last_lr()[0],
+        hist.append(dict(epoch=ep, train=tr, val=te, lr=sched.get_last_lr()[0],
                          sec=time.time() - t0))
-        print("epoch %3d  train %.6f  test %.6f  (%.1fs)" % (ep, tr, te, time.time() - t0))
+        print("epoch %3d  train %.6f  val %.6f  (%.1fs)" % (ep, tr, te, time.time() - t0))
 
         if te < best - 1e-6:
             best, bad = te, 0
             torch.save({"model": model.state_dict(), "args": vars(args),
                         "species": train_ds.target_species,
+                        # WHICH CHEMISTRY, AND WHICH DISTANCE CONVENTION.
+                        # Neither changes a tensor shape, which is exactly why
+                        # they have to be written down: without them a model
+                        # trained on methane and sulfate loads into a run
+                        # predicting acetate, every shape agrees, nothing
+                        # raises, and the field is merely wrong. evaluate.py
+                        # and predict.py compare these and say so by name.
+                        "reaction": reaction.key,
+                        "reaction_species": list(reaction.species),
+                        "distance_convention": convention,
                         "param_names": train_ds.param_names,
                         # which layout the dataset used, so predict.py can put
                         # the numbers you type into the right columns
@@ -323,23 +541,55 @@ def main():
                         "trunk_cols": train_ds.trunk_cols,
                         "branch_ch": train_ds.branch_ch,
                         "switch_label": train_ds.cfg["label"],
-                        "grid": list(train_ds.shape)},
+                        "grid": list(train_ds.shape),
+                        # AUDIT TRAIN-04. The exact geometries in each split,
+                        # so evaluate.py scores on the same test rocks instead
+                        # of recomputing a split from a fraction and a seed.
+                        "split_geometries": split_ids,
+                        "split_kind": "two-way" if args.two_way_split else "three-way",
+                        # AUDIT DATA-05 and DATA-04. The scalings the network
+                        # was actually trained under, so evaluation and
+                        # prediction reuse them rather than refitting.
+                        "vel_stats": (None if fitted_vel is None else
+                                      [fitted_vel[0].tolist(), fitted_vel[1].tolist()]),
+                        "target_scale": (None if fitted_scale is None else
+                                         fitted_scale.tolist())},
                        os.path.join(args.out, "best.pt"))
         else:
             bad += 1
             if bad >= args.patience:
                 print("early stop at epoch %d" % ep); break
 
+    # AUDIT TRAIN-04. The checkpoint has been chosen. Only now is the test set
+    # opened, and it is the test number that is reported and written down.
     model.load_state_dict(torch.load(os.path.join(args.out, "best.pt"))["model"])
     rmse = evaluate(model, test_loader, device)
-    summary = dict(best_test_loss=best, species=train_ds.target_species,
-                   rmse=rmse, rmse_mean=rmse, history=hist, args=vars(args))
+    val_rmse = evaluate(model, val_loader, device)
+    summary = dict(best_val_loss=best, species=train_ds.target_species,
+                   reaction=reaction.key, distance_convention=convention,
+                   rmse=rmse, rmse_mean=rmse, val_rmse=val_rmse,
+                   split_kind="two-way" if args.two_way_split else "three-way",
+                   split_geometries=split_ids,
+                   target_scale=(None if fitted_scale is None
+                                 else fitted_scale.tolist()),
+                   history=hist, args=vars(args))
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
-    print("\nheld-out RMSE (normalised units):")
-    print("  %-6s %.4f    <- the 2D paper's bar was 0.04"
-          % (train_ds.target_species, rmse))
+    print()
+    if args.two_way_split:
+        print("TWO-WAY SPLIT. One set chose the checkpoint and is reported "
+              "here, so this number is optimistic.")
+        print("held-out RMSE (normalised units):")
+        print("  %-6s %.4f    <- the 2D paper's bar was 0.04"
+              % (train_ds.target_species, rmse))
+    else:
+        print("RMSE (normalised units), on geometries held out of both "
+              "training and checkpoint selection:")
+        print("  %-6s test %.4f    <- the 2D paper's bar was 0.04"
+              % (train_ds.target_species, rmse))
+        print("  %-6s val  %.4f    (what the checkpoint was chosen on; "
+              "report the test number)" % ("", val_rmse))
 
 
 if __name__ == "__main__":

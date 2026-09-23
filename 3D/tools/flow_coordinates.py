@@ -382,6 +382,21 @@ def _self_test():
           % (mono, np.nanmin(t5[mm]), np.nanmax(t5[mm])))
     ok &= mono
 
+    # ---- 5b. the same rock, entered from a different face ------------------
+    # AUDIT FLOWCOORD-07. travel_time takes inlet_axis, but every test and
+    # every profile here ran along axis 0, so nothing ever checked that the
+    # rest of the function honours it. Rotating the rock and the velocity and
+    # asking for the matching inlet_axis has to give the same field rotated:
+    # if any part is still hard-wired to axis 0, these two disagree.
+    for ax in (1, 2):
+        g_rot = np.moveaxis(g, 0, ax)
+        v_rot = np.zeros((3,) + g_rot.shape, np.float32)
+        v_rot[ax][g_rot == PORE] = 1.0
+        t_rot, _ = travel_time(v_rot, g_rot, normalize=True, inlet_axis=ax)
+        same = np.allclose(np.moveaxis(t5, 0, ax), t_rot, equal_nan=True, atol=1e-5)
+        print("5b. inlet_axis=%d gives the axis-0 answer rotated = %s" % (ax, same))
+        ok &= same
+
     # ---- 6. wall distance -------------------------------------------------
     dw = wall_distance(g)
     print("6. wall distance  range %.2f .. %.2f voxels" % (dw[mm].min(), dw[mm].max()))

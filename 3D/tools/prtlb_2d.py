@@ -2252,12 +2252,17 @@ def transport_self_test():
               - float(ob[-1, 0][lining].mean())) > 1e-3,
           "%.5f against %.5f" % (float(os_[-1, 0][lining].mean()),
                                  float(ob[-1, 0][lining].mean())))
+    # AUDIT PRTLB-03. This check used to end in "or True", which forced it to
+    # pass whatever the arrays held: a test that cannot fail is not a test. It
+    # now asserts what it claims. Exact equality is the right comparison here,
+    # because with no biofilm voxel in the geometry the in_biofilm diffusivity
+    # is never read, so the two runs execute the identical arithmetic.
     check("and with no biofilm code, in_biofilm changes nothing",
           np.array_equal(
               solve_adr(g, v, pe=30.0, da=1.0, n_t=3, n_species=4,
                         chem=Settings().chemistry())[0],
               solve_adr(g, v, pe=30.0, da=1.0, n_t=3, n_species=4,
-                        chem=slow.chemistry().truncate(4))[0]) or True)
+                        chem=slow.chemistry().truncate(4))[0]))
 
     # 15g. NO MICROBES MEANS NO BIOMASS FIELD. Not one that quietly decays:
     #      a uniform field carrying no information is worse than a blank one,

@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 """The velocity operator, and the pressure U-Net that feeds it.
 
+NEW IN THE FLOW VERSION
+    The 2D release predicts concentration from geometry and two dimensionless numbers.
+    It never predicts a flow field, because at Peclet numbers of 1 to 10 on a slice the
+    flow is nearly uniform and the concentration operator can absorb it.
+
+    These two networks are the optional first half of the flow-aware path: geometry to
+    velocity, and then the existing operator from velocity to concentration. They are
+    OPTIONAL by design. Every switch off reproduces the published behaviour exactly,
+    which test_three_switches.py checks, so nothing here can quietly become a
+    requirement.
+
+    The 2D forms of both are exact ports rather than reimplementations, so that the
+    weights released with the flow paper load into them unchanged and their published
+    numbers can be reproduced before anything of ours is compared with them.
+
 Two networks, and the 2D forms of both are exact ports so that the weights released
 with the paper load into them unchanged. test_velocity_model.py proves that by loading
 Velocity.pt and Pressure_component_UNet.pt and reporting any parameter that does not
@@ -473,16 +488,25 @@ def load_reference_weights(model, path, verbose=True):
         st = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(st, dict) and "state_dict" in st:
         st = st["state_dict"]
-    missing, unexpected = model.load_state_dict(st, strict=False)
+    # AUDIT VELMODEL-09. strict=False forgives a missing or an unexpected key,
+    # but it does NOT forgive a key that is present with the wrong shape:
+    # load_state_dict raises on that whatever strict is set to. The mismatches
+    # were therefore found and printed after a call that could never reach the
+    # print. They are found first now, dropped from the load with the reason
+    # said out loud, and the tensors that do match are still loaded.
+    own = dict(model.state_dict())
+    shape_bad = [(k, tuple(v.shape), tuple(own[k].shape))
+                 for k, v in st.items()
+                 if k in own and tuple(own[k].shape) != tuple(v.shape)]
+    usable = {k: v for k, v in st.items()
+              if not (k in own and tuple(own[k].shape) != tuple(v.shape))}
+    missing, unexpected = model.load_state_dict(usable, strict=False)
+    # a tensor skipped for its shape is missing from the model's point of view
+    missing = list(missing) + [k for k, _, _ in shape_bad]
     if verbose:
         print("  loaded %s" % os.path.basename(path))
         print("    missing keys    : %d %s" % (len(missing), list(missing)[:4] or ""))
         print("    unexpected keys : %d %s" % (len(unexpected), list(unexpected)[:4] or ""))
-        shape_bad = []
-        for k, v in st.items():
-            own = dict(model.state_dict()).get(k)
-            if own is not None and tuple(own.shape) != tuple(v.shape):
-                shape_bad.append((k, tuple(v.shape), tuple(own.shape)))
         print("    shape mismatches: %d %s" % (len(shape_bad), shape_bad[:3] or ""))
         if missing or unexpected or shape_bad:
             print("    THE PORT HAS DRIFTED. Numbers measured from this model are not "

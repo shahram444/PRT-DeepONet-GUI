@@ -42,6 +42,13 @@ def _resolve_params(param_names, params):
     return out
 
 
+# =============================================================================
+#  THE RATE FIELDS
+#  A predicted concentration is hard to judge by eye. The BIOTIC and ABIOTIC
+#  rates computed from it are not: they show where the reaction is actually
+#  happening, which is the thing a reader wants to see and the thing a bad
+#  prediction gets visibly wrong.
+# =============================================================================
 def reaction_rates(conc, species, params, param_names):
     """Turn predicted concentrations into the reaction-rate fields.
 
@@ -81,6 +88,8 @@ def reaction_rates(conc, species, params, param_names):
 
 
 def velocity_magnitude(vel):
+    # Summed over the component axis, which is axis 0 in every velocity array
+    # this project writes, in 2D and in 3D alike.
     return None if vel is None else np.sqrt((np.asarray(vel, np.float32) ** 2).sum(0))
 
 
@@ -94,7 +103,7 @@ def _norm(panels):
     error a reader is trying to see."""
     out = []
     for p in panels:
-        n, a, c = p[0], p[1], p[2]
+        n, a, c = p[0], p[1], p[2]        # name, field, colour map
         lim = p[3] if len(p) > 3 else None
         if a is not None:
             out.append((n, a, c, lim))
@@ -103,6 +112,8 @@ def _norm(panels):
 
 def shared_limits(*arrays):
     """(vmin, vmax) over every finite value in the given arrays."""
+    # Finite values only: a masked grain is NaN, and one NaN would take the
+    # whole colour scale with it.
     vals = [np.asarray(a)[np.isfinite(a)] for a in arrays if a is not None]
     vals = [v for v in vals if v.size]
     if not vals:
@@ -111,6 +122,13 @@ def shared_limits(*arrays):
     return float(v.min()), float(v.max())
 
 
+# =============================================================================
+#  DRAWING
+#  Two rules throughout. Grains are masked out rather than drawn as zero,
+#  because a zero inside a grain and a zero in the pore mean different things
+#  and one colour for both hides the front. And one colour scale per row across
+#  time, so a row reads as evolution instead of as five restretched pictures.
+# =============================================================================
 def render_2d(material, panels, path, title, slice_axis=2, slice_index=None):
     """panels: list of (name, 3D array, cmap[, (vmin, vmax)]). Mid-plane slices."""
     import matplotlib; matplotlib.use("Agg")
@@ -165,6 +183,12 @@ def _grain_surface(ax, solid, color="#8d949d", alpha=0.30, offset=0):
         pass
 
 
+# =============================================================================
+#  THE SAME THING IN THREE DIMENSIONS
+#  A volume cannot be shown whole, so it is cut open and a bounded number of
+#  points is drawn. max_points is a drawing limit and nothing else: it must
+#  never change which voxels were predicted.
+# =============================================================================
 def render_3d(material, panels, path, title, max_points=14000, cut=True, trim=3):
     """One 3D panel per field: grains translucent, field as a coloured point
     cloud through the half-cut pore space.

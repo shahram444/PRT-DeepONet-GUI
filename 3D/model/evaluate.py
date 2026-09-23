@@ -39,6 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 from dataset_reader import (PRT3DDataset, split_by_geometry,        # noqa
+                            indices_for_geometries,
                             scatter_to_volume, dataset_kwargs_from_ckpt,
                             species_of_ckpt)
 from deeponet_model import PRT_DeepONet3D                                            # noqa
@@ -75,9 +76,57 @@ def run_one(ckpt, args, device, tag, save_fields=0):
     # rebuild EXACTLY the dataset configuration this checkpoint was trained with,
     # switches included; old checkpoints have no switch keys and default to off
     kw, cfg = dataset_kwargs_from_ckpt(ck)
-    _, te = split_by_geometry(args.data, frac=args.test_frac, seed=args.seed)
+
+    # AUDIT TRAIN-04. Use the geometries the checkpoint says were held out,
+    # rather than recomputing a split here from a fraction and a seed. If those
+    # two ever disagree, this scores the model on rocks it was trained on and
+    # nothing says so. Older checkpoints carry no split, and then the old
+    # behaviour is used and the output says which happened.
+    split = ck.get("split_geometries")
+    if split and split.get("test"):
+        te = indices_for_geometries(args.data, split["test"])
+        print("test set    : the %d geometries recorded in the checkpoint"
+              % len(split["test"]))
+        if ck.get("split_kind") == "two-way":
+            print("              two-way split: these rocks also chose the "
+                  "checkpoint, so this score is optimistic")
+    else:
+        _, te = split_by_geometry(args.data, frac=args.test_frac, seed=args.seed)
+        print("test set    : recomputed here, because this checkpoint records "
+              "no split.")
+        print("              It is only the same set if --test-frac and "
+              "--seed match the training run.")
+
+    # AUDIT DATA-05 and DATA-04. Score under the scalings the network was
+    # trained with, not under scalings refitted on the test rows.
+    vs = ck.get("vel_stats")
+    if vs:
+        kw["vel_stats"] = (np.asarray(vs[0], np.float32),
+                           np.asarray(vs[1], np.float32))
+    if ck.get("target_scale"):
+        kw["target_scale"] = np.asarray(ck["target_scale"], np.float32)
+
     ds = PRT3DDataset(args.data, indices=te, full_grid=True, **kw)
     print("  switches : %s" % cfg["label"])
+
+    # What the checkpoint says it is for. Neither of these changes a tensor
+    # shape, so neither is caught by the trunk-width check below: a model
+    # trained on one chemistry scores perfectly happily against another, and
+    # the number means nothing. Print them, and say plainly when the
+    # checkpoint does not record them.
+    if ck.get("reaction"):
+        print("  reaction : %s, distance convention %r"
+              % (ck["reaction"], ck.get("distance_convention", "not recorded")))
+        if ck.get("reaction_species") and ds.species:
+            missing = [s for s in ds.species if s not in ck["reaction_species"]]
+            if missing:
+                print("             NOTE: this dataset holds %s, which %s does "
+                      "not list. The score below is against fields the model "
+                      "was not trained for."
+                      % (", ".join(missing), ck["reaction"]))
+    else:
+        print("  reaction : not recorded in this checkpoint, so nothing here "
+              "can check that the dataset is the same chemistry")
     if ds.trunk_dim != trunk_dim_of(ck):
         sys.exit("checkpoint expects a %d-input trunk but this dataset gives %d. "
                  "The checkpoint and the dataset disagree about the time axis: "

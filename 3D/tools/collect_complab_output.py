@@ -3,6 +3,25 @@
 collect_complab_output.py — turn a finished CompLaB campaign into ONE training-ready HDF5 file,
 and report every run that failed and why.
 
+WHAT CHANGED FROM THE 2D VERSION
+    There is no 2D counterpart to this file, and that absence is the point. The
+    published release ships geometries, weights and notebooks. It does not ship the
+    simulations the weights were fitted to, and the training notebooks read them from
+    a path on one machine that was never published. So the 2D work cannot be retrained
+    by anyone outside that group, whatever else is in the repository.
+
+    This project therefore generates its own training data, with CompLaB3D, and this
+    file is the step that turns a directory of finished runs into the single .h5 that
+    everything downstream reads. Being able to rebuild the training set from scratch
+    is what makes the 3D work reproducible where the 2D work is not.
+
+    Two things it is careful about, both of which cost a day to find once:
+    the field is stored already divided by conc_scale, because the reader divides
+    regardless and a file that was scaled twice trains and scores without complaint;
+    and the species file names are tried by name first and then by CompLaB's positional
+    subsLattice and bioLattice names, because the shipped template sets the positional
+    form and the by-name search failed every run.
+
     python collect_complab_output.py --campaign ./campaign --geometries ./geometries \
                       --out ./dataset --mode steady
 
@@ -277,12 +296,37 @@ def load_run(rdir, species, microbes, shape, mode, want_velocity, max_conc,
     if not os.path.isdir(od):
         raise ValueError("no output directory")
 
+    # AUDIT, found while reading against the shipped template. This looked for
+    # output/<species>_%07d.vti, i.e. Ac_0000100.vti, taking the name straight
+    # from params.json. But CompLaB.xml.template sets
+    #   <subs_filename>subsLattice</subs_filename>
+    #   <bio_filename>bioLattice</bio_filename>
+    # so CompLaB writes subsLattice0_*.vti and bioLattice0_*.vti, and every run
+    # failed at "no .vti for species 'Ac'". collect_foreign_complab.py gets
+    # this right by reading the two names out of the xml, and this one now
+    # falls back to the same convention: the species name first, because a
+    # campaign may have been renamed, then the positional subs/bio name.
     fields = list(species) + list(microbes)
     per = OrderedDict()
-    for nm in fields:
-        s = snapshots(od, nm)
+    for i, nm in enumerate(fields):
+        if i < len(species):
+            candidates = [nm, "subsLattice%d" % i, "subs%d" % i]
+        else:
+            j = i - len(species)
+            candidates = [nm, "bioLattice%d" % j, "bio%d" % j]
+        s = []
+        for cand in candidates:
+            s = snapshots(od, cand)
+            if s:
+                if cand != nm:
+                    print("       reading '%s' from %s_*.vti" % (nm, cand))
+                break
         if not s:
-            raise ValueError("no .vti for species '%s'" % nm)
+            raise ValueError(
+                "no .vti for species '%s'. Looked for %s. CompLaB names these "
+                "files from <subs_filename> and <bio_filename> in the xml, so "
+                "check those match." %
+                (nm, ", ".join("%s_*.vti" % c for c in candidates)))
         per[nm] = s
 
     ntimes = min(len(v) for v in per.values())
@@ -578,10 +622,32 @@ def main():
         sg.create_dataset("t_norm", data=np.array(
             [np.asarray(r[3], np.float32) for r in recs], np.float32))
 
+        # Per-species scale so the ML side normalises identically every time.
+        # Accumulated run by run. The old one-liner stacked EVERY run for a
+        # species into one array -- (S, T, nx, ny, nz) float32, over 10 GB for a
+        # realistic 240-run 128x64x64 campaign -- and did it at the very end,
+        # after the HDF5 was already written. A multi-day collection would die
+        # with MemoryError on its last statement.
+        scale = np.full(C, 1e-30, np.float64)
+        for r in recs:
+            for ci in range(C):
+                m = float(np.abs(r[2][:, ci]).max())
+                if m > scale[ci]:
+                    scale[ci] = m
+        scale = scale.astype(np.float32)
+
         dc = sg.create_dataset("conc", shape=(S, T, C) + shape, dtype=np.float16,
                                compression=comp, chunks=(1, 1, 1) + shape)
         for i, r in enumerate(recs):
-            dc[i] = r[2].astype(np.float16)
+            # AUDIT, found while reading against the format document. This
+            # used to store raw mol/L while collect_foreign_complab.py stored
+            # the field already divided by conc_scale, and both wrote the same
+            # conc_scale attribute. dataset_reader.py divides by it whatever
+            # the source, so one of the two routes was normalised twice and
+            # nothing complained: the file loads, trains and scores either way.
+            # Both collectors now store the scaled field. Multiply by
+            # conc_scale to get mol/L back, which is what the attribute is for.
+            dc[i] = (r[2] / scale[None, :, None, None, None]).astype(np.float16)
 
         n_vel = sum(1 for r in recs if r[4] is not None)
         n_mag = sum(1 for r in recs if len(r) > 5 and r[5])
@@ -617,19 +683,6 @@ def main():
                 if r[4] is not None:
                     dv[i] = r[4].astype(np.float16)
 
-        # Per-species scale so the ML side normalises identically every time.
-        # Accumulated run by run. The old one-liner stacked EVERY run for a
-        # species into one array -- (S, T, nx, ny, nz) float32, over 10 GB for a
-        # realistic 240-run 128x64x64 campaign -- and did it at the very end,
-        # after the HDF5 was already written. A multi-day collection would die
-        # with MemoryError on its last statement.
-        scale = np.full(C, 1e-30, np.float64)
-        for r in recs:
-            for ci in range(C):
-                m = float(np.abs(r[2][:, ci]).max())
-                if m > scale[ci]:
-                    scale[ci] = m
-        scale = scale.astype(np.float32)
         sg.attrs["conc_scale"] = scale
         h.attrs["species"] = np.array(fields, dtype="S8")
         h.attrs["param_names"] = np.array(pnames, dtype="S16")

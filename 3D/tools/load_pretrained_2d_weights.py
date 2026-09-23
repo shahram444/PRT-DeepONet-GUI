@@ -58,6 +58,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from deeponet_model import PRT_DeepONet3D, count_parameters                # noqa: E402
 
 
+# =============================================================================
+#  THEIR KEY NAMES TO OURS
+#  The released files hold branch1_net, branch2_net and a trunk_net Sequential.
+#  Ours hold branch1, branch2 and a trunk with named layers. Both are the same
+#  eight trunk layers in the same order, so the mapping is positional and
+#  complete. The mapping itself now lives in prt_core/model.py, where it is
+#  checked round trip; this is the copy the command line uses.
+# =============================================================================
 def remap(src):
     """His key names -> ours.  Both networks have the same eight trunk layers,
     so the mapping is positional and complete."""
@@ -81,6 +89,14 @@ def remap(src):
     return out
 
 
+# =============================================================================
+#  LOADING, AND SAYING WHAT HAPPENED
+#  At two parameters every tensor in the released file has a counterpart of the
+#  same shape, so the load is STRICT and anything missing is a real mismatch.
+#  At three the first parameter-branch layer cannot fit and is skipped, out
+#  loud. A warm start that quietly loaded most of a network would be worse than
+#  one that refused.
+# =============================================================================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True,
@@ -100,9 +116,13 @@ def main():
                     help="write a checkpoint our train.py can --init-from")
     a = ap.parse_args()
 
+    # weights_only=False because the released files are plain pickles saved
+    # before torch made the safe loader the default.
     src = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(src, dict):
         sys.exit("that file does not hold a state dict")
+    # A released file is a bare state dict; one of ours wraps it under "model".
+    # Both are accepted so a warm start can be chained from either.
     if "model" in src and isinstance(src["model"], dict):
         src = src["model"]
 
@@ -116,7 +136,7 @@ def main():
           "(x, y, t, gdf), %.2fM parameters"
           % (nx, ny, count_parameters(model) / 1e6))
 
-    mapped = remap(src)
+    mapped = remap(src)          # their names to ours, before anything is compared
     own = model.state_dict()
     took, shape_clash, unknown = {}, [], []
     for k, v in mapped.items():
@@ -126,7 +146,7 @@ def main():
             shape_clash.append((k, tuple(v.shape), tuple(own[k].shape)))
         else:
             took[k] = v
-    missing = [k for k in own if k not in took]
+    missing = [k for k in own if k not in took]     # ours with no counterpart
 
     print("\n%-46s %s" % ("TRANSFERRED", "%d tensors" % len(took)))
     for grp in ("branch1", "branch2", "trunk"):
@@ -157,6 +177,8 @@ def main():
         model.load_state_dict(took, strict=False)
 
     # a forward pass, because "the shapes match" is not the same as "it runs"
+    # A forward pass, because "the shapes match" and "it runs" are different
+    # claims and only the second one is worth reporting.
     b1 = torch.zeros(1, 1, nx, ny, 1)
     b1[0, 0, :, :, 0] = torch.rand(nx, ny) > 0.4
     b2 = torch.randn(1, a.n_params)

@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Our descriptors against theirs, on their own example domain, voxel by voxel.
 
+NEW IN THE FLOW VERSION
+    There is no 2D counterpart, and the reason is worth stating: when this project
+    ports something published, it checks the port against the published thing rather
+    than against its own idea of what the published thing does. The 2D port is held
+    to the same bar by 2D_scripts/test_against_notebooks.py, which runs the three
+    released notebooks and requires a difference of exactly zero.
+
+    This is that check for the flow work. Loading the released weights proves the
+    SHAPES match. This proves the NUMBERS do.
+
 Loading the released weights proves the SHAPES match. This proves the NUMBERS do.
 It runs the feature functions copied verbatim out of the released load notebook beside
 ours on their bundled domain, compares MIS, UPRM and the squared wall distance, then
@@ -39,7 +49,12 @@ VEL_MU_U, VEL_SD_U = 0.00023968351888470352, 0.0005056853988207877
 VEL_MU_V, VEL_SD_V = 6.503713052552484e-07,  0.00029989489121362567
 RE_B2 = {0: 0.009110829792916775, 1: 0.02172919735312462, 2: 0.04727563634514809}
 
-# ============================== THEIR code, copied verbatim from the load notebook
+# =============================================================================
+#  THEIR CODE, COPIED VERBATIM FROM THE LOAD NOTEBOOK
+#  Not tidied, not renamed, not vectorised. The point of this block is to be
+#  THEIRS, so that a disagreement below is a disagreement with their method and
+#  not with our transcription of it. Nothing in here should ever be improved.
+# =============================================================================
 def their_uprm_map(m):
     H, W = m.shape; void = (m > 0)
     e = distance_transform_edt(void).astype(np.float32)
@@ -98,6 +113,14 @@ def their_dw2_map(m):
     o = np.zeros_like(f2); o[pore] = np.clip((f2[pore]-DW2_MIN)/(DW2_MAX-DW2_MIN), 0, 1)
     return o.astype(np.float32)
 
+# =============================================================================
+#  THE COMPARISON
+#  Their domain, their weights, our features against theirs. Two stages: the
+#  descriptors voxel by voxel, and then the predicted velocity field with their
+#  network run twice, once on each set of features. The second stage is the one
+#  that matters, because a small disagreement in a descriptor may or may not
+#  survive the network, and only running it says which.
+# =============================================================================
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Our flow descriptors against the released ones, voxel by voxel.")

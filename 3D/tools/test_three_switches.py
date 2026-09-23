@@ -44,6 +44,13 @@ def check(name, cond, detail=""):
 
 
 # ---------------------------------------------------------------------------
+# =============================================================================
+#  THE ORIGINAL, COPIED OUT AND FROZEN
+#  This is the reader's __getitem__ as it stood BEFORE any switch existed. It is
+#  duplicated here on purpose and must never be refactored to call the live one:
+#  the whole test is that the live reader, with every switch off, still produces
+#  what this produces. A shared implementation would agree with itself always.
+# =============================================================================
 def original_getitem(h5path, s, t, distance, with_velocity, with_time, n_points,
                      seed, species_index=0):
     """The pre-switch implementation, copied verbatim from git history.
@@ -132,6 +139,13 @@ def test_off_is_unchanged(path):
 
 
 # ---------------------------------------------------------------------------
+# =============================================================================
+#  WHAT EACH SWITCH IS ALLOWED TO CHANGE
+#  A switch may widen the branch or the trunk. It may not change the target, the
+#  sampling, or what any existing column means. These check the shapes first,
+#  then the values, because a shape that is right with values that moved is the
+#  failure that reads as a successful run.
+# =============================================================================
 def test_switch_shapes(path):
     print("\n[2] every switch combination builds the right shapes")
     cases = [

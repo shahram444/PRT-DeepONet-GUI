@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Add the flow descriptors to a dataset that was collected without them.
 
+NEW IN THE FLOW VERSION
+    The 2D release has no flow descriptors, so there was nothing to add and no
+    file like this. What makes it necessary here is arithmetic: a real campaign is
+    a few hundred thousand .vti files, and recollecting one to gain two arrays that
+    depend only on the geometry costs hours of reading to compute something that
+    takes seconds. So the descriptors are added in place, to the file that already
+    exists, and the original collection is left alone.
+
 The collectors write MIS and UPRM for new campaigns. This adds them to a file that
-already exists, in place, without recollecting anything, because recollecting a real
-campaign means reading a few hundred thousand VTI files again for two arrays that
-depend only on the geometry.
+already exists, in place.
 
     geom/mis    (G, nx, ny, nz) float32, with mis_mu and mis_sd on the dataset
     geom/uprm   (G, nx, ny, nz) float32, with uprm_mu and uprm_sd
@@ -49,7 +55,15 @@ except ImportError:                                                    # pragma:
 import flow_features as ff
 
 
+# =============================================================================
+#  THE ONE PASS OVER THE FILE
+#  Opened "r+", so this writes into the dataset in place. The three arrays it
+#  adds depend only on the geometry, never on a run's conditions, which is why
+#  they can be added afterwards at all: no simulation has to be repeated.
+# =============================================================================
 def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
+    # "r" for a dry run, so a file cannot be modified by a command whose whole
+    # purpose is to report what a real run would do.
     mode = "r" if dry_run else "r+"
     with h5py.File(path, mode) as h:
         if "geom/material" not in h:
@@ -62,10 +76,14 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                 "the right thing to do only if the buffer was wrong the first time."
                 % ", geom/".join(present))
 
+        # Read whole: the descriptors need every rock before any can be scaled,
+        # so there is nothing to gain from reading this one lazily.
         mat = np.asarray(h["geom/material"])
         pore_code = int(h.attrs["pore_code"]) if "pore_code" in h.attrs else None
         dim = int(h.attrs.get("dimension", 3 if mat.shape[-1] > 1 else 2))
         G = len(mat)
+        # A 2D campaign is stored with a third axis of 1. Squeeze it for the
+        # feature routines, which work in the dimension the rock actually has.
         squeeze = (dim == 2 and mat.ndim == 4 and mat.shape[-1] == 1)
         if verbose:
             print("%s" % path)
@@ -77,6 +95,13 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
             print("  --dry-run, nothing written")
             return None
 
+        # ---------------------------------------------------------------
+        #  ROCK BY ROCK
+        #  The whole campaign's descriptors are held in memory here, because
+        #  the scaling below has to see every rock before any of it can be
+        #  written. That is the one real cost of this file: three float32
+        #  arrays the size of the geometry stack.
+        # ---------------------------------------------------------------
         out_shape = mat.shape
         mis = np.zeros(out_shape, np.float32)
         uprm = np.zeros(out_shape, np.float32)
@@ -88,6 +113,8 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
             pore = ff.pore_mask_from_material(m, pore_code)
             pores.append(pore)
             f = ff.all_features(pore, buf=buffer)
+            # SQUARED below, not here: a no-slip profile is parabolic in the
+            # wall distance, so the square is the quantity the trunk wants.
             e = ff.distance_transform_edt(pore).astype(np.float32)
             if squeeze:
                 mis[i, ..., 0] = f["mis"]
@@ -109,7 +136,7 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                                for i in range(G)])
         lo, hi = float(allp.min()), float(allp.max())
         if hi <= lo:
-            hi = lo + 1.0
+            hi = lo + 1.0        # a rock one voxel wide everywhere: do not divide by 0
         dw2 = np.zeros_like(e2)
         for i in range(G):
             p = pores[i]
@@ -122,6 +149,13 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                 d[p] = np.clip((e2[i][p] - lo) / (hi - lo), 0, 1)
                 dw2[i] = d
 
+        # ---------------------------------------------------------------
+        #  WRITING, WITH THE SCALING BESIDE THE ARRAY
+        #  Every array carries the constants it was scaled with and a
+        #  how_to_read_this string. A descriptor whose scaling lives only in
+        #  the script that wrote it is unusable the moment somebody opens the
+        #  file on their own, which is most of the times it gets opened.
+        # ---------------------------------------------------------------
         g = h["geom"]
         for name, arr, attrs in (
                 ("mis", mis, {"mis_mu": mis_mu, "mis_sd": mis_sd}),
@@ -165,6 +199,12 @@ def add_features(path, buffer=10, force=False, dry_run=False, verbose=True):
                     dw2_min=lo, dw2_max=hi)
 
 
+# =============================================================================
+#  THE COMMAND LINE
+#  --buffer is the one argument that has to be right and cannot be guessed: it
+#  is how many voxels of open space the campaign padded onto each end of the
+#  flow axis, and UPRM is measured from that face.
+# =============================================================================
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Add MIS, UPRM and the squared wall distance to an existing dataset.")

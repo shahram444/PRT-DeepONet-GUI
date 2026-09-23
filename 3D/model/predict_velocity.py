@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Run a trained velocity operator on a geometry, with no simulation.
 
+NEW IN THE FLOW VERSION
+    Nothing in the 2D release predicts a flow field, so there is no 2D counterpart.
+    This is the step that makes the flow-aware path worth having at all: with it, a
+    new rock needs no Stokes solve before the concentration model can be run on it.
+
+    The second way in, --data with --write-back, is the one that matters for the
+    comparison. It fills geom/velocity_pred in an existing dataset, so the
+    concentration model can then be trained on the PREDICTED field and scored against
+    the same model trained on the SIMULATED one. Those two numbers are the whole
+    question the flow-aware option exists to answer.
+
 Two ways in.
 
     --geometry rock.npz     one pore structure, one flow condition, one field out.
@@ -61,6 +72,13 @@ import flow_features as ff
 from harmonic_pressure import harmonic_gradient
 
 
+# =============================================================================
+#  THE CHECKPOINT, AND WHAT IT HAS TO CARRY
+#  Weights alone are not enough. The inputs were z scored during training, and
+#  a field predicted with different constants is wrong by a factor nothing in
+#  the output would show. So the scaling travels with the weights, and a file
+#  that does not carry it is refused here rather than used.
+# =============================================================================
 def load_checkpoint(path, device="cpu"):
     ck = torch.load(path, map_location=device, weights_only=False)
     if "model" not in ck or "stats" not in ck:
@@ -75,6 +93,13 @@ def load_checkpoint(path, device="cpu"):
     return model, ck, trunk_in
 
 
+# =============================================================================
+#  REBUILDING THE INPUTS THE CHECKPOINT'S WAY
+#  Every constant below comes out of ck["stats"], never out of the geometry in
+#  front of us. Recomputing them here from one rock would scale a single sample
+#  by its own spread, which is a different quantity from the one the network
+#  was fitted on and would look entirely plausible.
+# =============================================================================
 def features_for(pore, ck, device="cpu", unet=None):
     """Rebuild the branch and trunk inputs for one geometry, the checkpoint's way."""
     st = ck["stats"]
@@ -85,7 +110,7 @@ def features_for(pore, ck, device="cpu", unet=None):
             "The branch's fully connected layer is tied to the grid, so there is no "
             "way to run it here. Retrain, or resample the geometry."
             % (grid, tuple(pore.shape)))
-    ndim = len(grid)
+    ndim = len(grid)          # 2 or 3, from the grid, never from a flag
 
     f = ff.all_features(pore, buf=int(ck.get("buffer", 10)))
     b1 = np.empty((1, 3) + grid, np.float32)
@@ -136,14 +161,22 @@ def predict(model, ck, pore, condition, device="cpu", unet=None):
     out = model(torch.from_numpy(b1).to(device),
                 torch.from_numpy(b2).to(device),
                 torch.from_numpy(tr).to(device))[0].cpu().numpy()
+    # Back to physical units before anything is written. Everything downstream
+    # expects a velocity, not a z score.
     mu = np.asarray(st["vel_mu"], np.float32)
     sd = np.asarray(st["vel_sd"], np.float32)
     n = out.shape[-1]
     vel = np.stack([out[..., c] * sd[c] + mu[c] for c in range(n)])
-    vel[:, ~pore] = 0.0
+    vel[:, ~pore] = 0.0       # no flow inside a grain, whatever the network said
     return vel.astype(np.float32)
 
 
+# =============================================================================
+#  IS THE ANSWER PHYSICAL
+#  A predicted velocity field can match the simulated one voxel by voxel and
+#  still not conserve mass. This is the number that says so, and it is reported
+#  on every run rather than on request.
+# =============================================================================
 def divergence_residual(vel, pore):
     """Mean absolute divergence over the interior, relative to the mean speed.
 
@@ -165,6 +198,8 @@ def divergence_residual(vel, pore):
         d = np.zeros(vel.shape[1:], np.float64)
         d[tuple(sl_c)] = (vel[ax][tuple(sl_p)] - vel[ax][tuple(sl_m)]) * 0.5
         div += d
+    # The divergence is only meaningful away from the walls: a one-sided
+    # difference at a boundary voxel measures the boundary, not the field.
     inner = interior_pore_mask(pore)
     speed = np.sqrt((vel ** 2).sum(0))
     scale = speed[pore].mean() if pore.any() else 1.0
@@ -239,7 +274,17 @@ def main(argv=None):
     ap.add_argument("--checkpoint", required=True, help="best.pt from train_velocity.py")
     ap.add_argument("--geometry", help=".npz or .npy holding one pore structure")
     ap.add_argument("--data", help="dataset.h5; predict for every rock in it")
-    ap.add_argument("--pe", type=float, help="the flow condition, in the checkpoint's units")
+    # AUDIT VELPRED-08. The flag was called --pe and described as the Peclet
+    # number, but the checkpoint records which column it was actually
+    # conditioned on and it need not be Peclet. --condition is the honest name
+    # and is what the help and the messages use; --pe stays as an alias so no
+    # existing script or GUI page breaks, and the output always says which
+    # quantity the number was read as.
+    ap.add_argument("--condition", "--pe", type=float, dest="condition",
+                    help="the value of the conditioning variable this "
+                         "prediction is for, in the checkpoint's own units. "
+                         "Which variable that is is recorded in the checkpoint "
+                         "and printed when it runs; --pe is an accepted alias")
     ap.add_argument("--pore-code", type=int, default=None)
     ap.add_argument("--flow-axis", type=int, default=0)
     ap.add_argument("--unet", help="pressure U-Net checkpoint, if the model used one")
@@ -306,8 +351,10 @@ def main(argv=None):
 
     if not a.geometry:
         ap.error("give --geometry or --data")
-    if a.pe is None:
-        ap.error("give --pe, the flow condition this prediction is for")
+    if a.condition is None:
+        ap.error("give --condition, the value of the conditioning variable "
+                 "this prediction is for. This checkpoint was conditioned on "
+                 "%r." % ck.get("condition", "an unrecorded variable"))
 
     if a.geometry.endswith(".npz"):
         with np.load(a.geometry) as d:
@@ -323,7 +370,7 @@ def main(argv=None):
     print("\ngeometry %s, shape %s, porosity %.3f"
           % (a.geometry, tuple(arr.shape), float(pore.mean())))
 
-    vel = predict(model, ck, pore, a.pe, device, a.unet)
+    vel = predict(model, ck, pore, a.condition, device, a.unet)
     speed = np.sqrt((vel ** 2).sum(0))
     print("  predicted speed: mean %.4g, max %.4g over the pore space"
           % (float(speed[pore].mean()), float(speed[pore].max())))
@@ -332,7 +379,7 @@ def main(argv=None):
 
     os.makedirs(a.out, exist_ok=True)
     np.savez_compressed(os.path.join(a.out, "velocity.npz"),
-                        velocity=vel, pore=pore, condition=a.pe,
+                        velocity=vel, pore=pore, condition=a.condition,
                         checkpoint=os.path.abspath(a.checkpoint))
     print("  wrote", os.path.join(a.out, "velocity.npz"))
     png = _render(os.path.join(a.out, "velocity.png"), vel, pore)

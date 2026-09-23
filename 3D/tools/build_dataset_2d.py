@@ -835,12 +835,17 @@ def main():
                             max_steps=int(cfg.ade_max_iT))
             prog.step(i, pe, da, da2, nfo, time.monotonic() - t_run)
             if (a.save_vti or a.save_png) and k < a.save_runs:
+                # AUDIT VTI-01. write_vti_and_png.py was missing from the
+                # project, so these two flags were accepted and then quietly
+                # did nothing. The module is restored; this guard stays for a
+                # partial checkout, and it now says what to do about it.
                 if write_vti_and_png is None:
                     if k == 0:
                         print("     NOTE: --save-vti / --save-png asked for, "
-                              "but write_vti_and_png.py is not in this "
-                              "project. No pictures are written; the dataset "
-                              "is unaffected.", flush=True)
+                              "but 3D/tools/write_vti_and_png.py could not be "
+                              "imported. No pictures are written; the dataset "
+                              "is unaffected. Check that the file is present.",
+                              flush=True)
                 else:
                     write_vti_and_png.save_run(
                     os.path.splitext(a.out)[0] + "_fields", k, cc, tt,

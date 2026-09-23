@@ -3,6 +3,18 @@
 collect_foreign_complab.py — CompLaB output that was NOT set up by
 complab_campaign.py, collected into the one dataset.h5 everything else reads.
 
+WHAT CHANGED FROM THE 2D VERSION
+    The 2D release has no data pipeline at all, so nothing here replaces anything.
+    What it replaces is a request: every time somebody hands over a folder of
+    CompLaB runs they did themselves, the alternative to this file is a one-off
+    conversion script that is written, used once and thrown away, and that nobody
+    can check afterwards.
+
+    This reads run folders that our own campaign builder did not write, which means
+    the conditions are not in a params.json and have to be recovered from the
+    settings .xml inside each run. That recovery is the whole difficulty, and every
+    guess it makes is printed rather than assumed.
+
 WHY THIS EXISTS, AND WHEN NOT TO USE IT
 ---------------------------------------
 collect_complab_output.py is the normal route. It expects the layout our own
@@ -1494,7 +1506,17 @@ def main():
                 _mis, _up, _e2, _pores = [], [], [], []
                 print("  computing MIS and UPRM for %d rocks (buffer %d)" % (G, _buf))
                 for _m in mats:
-                    _p = _ff.pore_mask_from_material(_m, pore_code)
+                    # AUDIT, found while reading the code. pore_code is not
+                    # defined at this point: the loop variable above is `code`
+                    # and the command-line value is args.pore_code. The
+                    # NameError was swallowed by the broad except below, which
+                    # printed a note and carried on, so geom/mis, geom/uprm and
+                    # geom/dw2 were NEVER written by this collector and switch
+                    # D with --geom-features could not be used on any file it
+                    # produced. The mats here are already re-coded to 0 solid,
+                    # 1 wall, 2 pore, so the project's own pore code is what
+                    # this wants, and None asks for exactly that.
+                    _p = _ff.pore_mask_from_material(_m, None)
                     _pores.append(_p)
                     _f = _ff.all_features(_p, buf=_buf)
                     _mis.append(_f["mis"]); _up.append(_f["uprm"])

@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """The velocity pipeline, end to end, on a dataset this test builds itself.
 
+NEW IN THE FLOW VERSION
+    The 2D release has no test suite, and nothing it does needs one of this shape:
+    three notebooks that are run by hand cannot silently lose a step, because a
+    person is watching each cell.
+
+    The flow-aware path is five scripts handing files to each other, four of them
+    new, and any one of them can be changed without the next one noticing until a
+    cluster job fails hours later. This builds a tiny dataset, runs the whole chain
+    over it, and checks the shapes and the scaling survive the round trip. It proves
+    nothing whatever about accuracy, which is what the held-out error is for.
+
 Four groups.
 
   1  the descriptors        flow_features and harmonic_pressure own self tests
@@ -75,7 +86,12 @@ def run(cmd, **kw):
                           cwd=HERE, env=env, **kw)
 
 
-# ------------------------------------------------------------------ 1 descriptors
+# =============================================================================
+#  1  THE DESCRIPTORS
+#  Each module checks itself; this only runs those self-tests and collects the
+#  result, so a descriptor that breaks is reported here as well as in its own
+#  file. Nothing is duplicated: a second copy of a check drifts from the first.
+# =============================================================================
 def group_descriptors():
     print("\n1  the descriptors")
     for mod in ("flow_features.py", "harmonic_pressure.py"):
@@ -86,7 +102,13 @@ def group_descriptors():
               "" if good else r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[:200])
 
 
-# ------------------------------------------------------------------------ 2 port
+# =============================================================================
+#  2  THE PORT
+#  Every released checkpoint must load into the ported classes with no missing
+#  key, no unexpected key and no shape mismatch. SKIPPED, and said out loud to
+#  be skipped, when the released weights are not on this machine: a check that
+#  silently passes because its input is absent is worse than no check.
+# =============================================================================
 def group_port(reference):
     print("\n2  the port against the released weights")
     if not reference:
@@ -103,7 +125,13 @@ def group_port(reference):
           r.returncode == 0)
 
 
-# ---------------------------------------------------------------------- 3 wiring
+# =============================================================================
+#  3  THE WIRING
+#  A small dataset in the project's own HDF5 layout, trained on for three
+#  epochs, then predicted from. Three epochs is not training; it is enough to
+#  prove that the tensors line up and that the scaling constants make the round
+#  trip from the file, through the checkpoint, into the prediction.
+# =============================================================================
 def _blob_geometry(nx, ny, seed, porosity=0.55):
     from scipy import ndimage
     rng = np.random.default_rng(seed)
@@ -252,7 +280,12 @@ def group_wiring(tmp):
                 check("the stored field is finite", bool(np.isfinite(a).all()))
 
 
-# ---------------------------------------------------------------------- 4 guards
+# =============================================================================
+#  4  THE GUARDS
+#  A grid mismatch, a dataset with no velocity, and a bare state_dict. Each has
+#  to fail with a sentence rather than a traceback, and none of them may produce
+#  a plausible looking answer, which is the failure that costs a week.
+# =============================================================================
 def group_guards(tmp):
     print("\n4  the guards")
     ck = os.path.join(tmp, "vel", "best.pt")
