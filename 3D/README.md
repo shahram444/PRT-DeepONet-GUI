@@ -208,6 +208,65 @@ failures: re-running the same parameters reproduces them exactly, so the fix is
 to check `PRT_DT`, lower `PRT_MAXFRAC`, or exclude that corner of parameter
 space. `retry` deliberately skips them.
 
+### Excluding a corner of the parameter space
+
+A run can finish, pass every per-run check, and still be unusable, because each
+field on its own is finite, positive and the right shape. The case this exists
+for is a Peclet number high enough that the cell Peclet number in the narrow
+throats approaches one: the advection scheme then oscillates, and with the
+positivity clamp in the solver the negative half of each oscillation is removed,
+so the error accumulates as mass instead of cancelling and the field ends up
+above the feed concentration. It is recognised by the maximum of a fed chemical
+exceeding its inlet value, and by the overshoot tracking the Peclet number while
+being flat in Damkohler.
+
+```bash
+python collect_complab_output.py --campaign ./complab_campaign --geometries ../geometries \
+                  --out ./dataset --keep-pe 0.02 0.2      # keep only these
+python collect_complab_output.py --campaign ./complab_campaign --geometries ../geometries \
+                  --out ./dataset --drop-pe 2.0           # or name what to drop
+```
+
+An excluded run is not a failed one. It is written to `failures.csv` under the
+stage `excluded`, counted apart from the failures, and the yield in
+`campaign_report.md` is quoted against the runs that were requested, so a
+deliberate restriction does not read as a bad campaign.
+
+### The complete record
+
+A dataset that holds only the fields is enough to fit a model and not enough to
+say what was fitted. Three more things go in beside them.
+
+The **reaction rate the solver computed**, read from `rate_<species>_*.vti` on
+the same time axis as the concentrations and scaled the same way. It is the only
+output that cannot be recovered from what is already stored: a rate recomputed
+afterwards is the rate law as the reader understands it, evaluated on fields
+already rounded to half precision. `--no-rate` skips it; it is the same size as
+the concentrations.
+
+**What each run was told to do**, verbatim rather than parsed, under `/inputs`:
+its `CompLaB.xml`, its `env.sh` and its `params.json`, plus a table of the xml
+settings every run has in common so a column can be read without parsing
+anything. A parsed copy alone goes out of date the moment the solver gains a
+setting this file does not know about; the text does not.
+
+**The rate law headers the binary was built with**, named with `--kinetics` and
+stored with their sha256. They are compiled in, so they are not in the campaign
+directory. The abiotic header reads its rate constant, its timestep and its
+per-step cap from the environment, so it does not pin the chemistry down on its
+own, which is why `env.sh` is stored per run beside it.
+
+```bash
+python collect_complab_output.py --campaign ./complab_campaign --geometries ../geometries \
+                  --out ./dataset --kinetics kinetics/defineKinetics.hh \
+                                             kinetics/defineAbioticKinetics.hh \
+                  --note "what this collection is"
+```
+
+The labels gain `species_role`, `param_units`, `spacing`, `spacing_unit`,
+`reaction`, `boundaries`, `n_times` and `structure_evolves`, the last taken from
+whether the run wrote one mask or a series of them.
+
 ### Parameter space
 
 The campaign varies six dimensionless groups, Latin-hypercube sampled in log
@@ -242,6 +301,26 @@ python model/train.py --data ... --out runs/vel  --with-velocity     # flow-cond
 
 Those three `--distance` runs are the ablation that carries the paper: they show
 that the *geodesic* field, not just any distance field, is what buys the accuracy.
+
+### A split that was designed rather than drawn
+
+The default split permutes the geometries from a seed, which is right when the
+geometries are interchangeable. They are not always. A campaign built to ask
+whether the model interpolates across porosity holds out whole porosity levels,
+and which geometry belongs to which set is then a property of the design that no
+seed reproduces.
+
+```bash
+python model/train.py --data dataset.h5 --out runs/gdf --split-file split.json
+```
+
+`split.json` is `{"train": [...], "val": [...], "test": [...]}` of geometry ids,
+which is the shape of the `split_geometries` entry already written into every
+checkpoint, so a split can be read out of one model and handed to the next. It
+is refused, by name, if a geometry is in two sets, if a set is empty, if an id
+repeats, or if an id carries no runs in the dataset; a geometry in none of the
+three sets is reported and left unused. The checkpoint records `split_kind` as
+`designed`, so a later reader can tell which of the two it was.
 
 ### Using a trained model
 
