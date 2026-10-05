@@ -1,0 +1,9 @@
+{
+  "key": "abc_bimolecular",
+  "title": "Irreversible bimolecular reaction, A + B gives C",
+  "species": ["A", "B", "C"],
+  "params": [["Pe", 0.02, 0.2, "log10"], ["Da", 0.1, 10.0, "log10"]],
+  "steady": false,
+  "source": "ours",
+  "notes": "A chemistry that is not in the registry in prt_core/reactions.py, defined as a table entry rather than as code. A is held at 1 on the inlet face and B at 1 on the outlet face, both by Dirichlet condition, and they meet in the pore space. The rate is second order, R = k[A][B], with no biomass and no saturation, so there are two dimensionless groups. The ranges are what the campaign this came from actually spans, and they are what turns a request outside them into a reported extrapolation rather than a quiet answer."
+}

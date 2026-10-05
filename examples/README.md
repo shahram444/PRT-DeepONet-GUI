@@ -1,6 +1,6 @@
 # examples
 
-Four input files you can read without running anything, and hand back to the
+Five input files you can read without running anything, and hand back to the
 code when you want to.
 
 | file | read by | what it is |
@@ -9,6 +9,7 @@ code when you want to.
 | `example_CompLaB.xml` | CompLaB, and `3D/tools/collect_foreign_complab.py` | one CompLaB run's input file, in the campaign dialect |
 | `example_defineKinetics.hh` | CompLaB, compiled in | the biotic rate law: `Ac + A -> P`, driven by the microbe `Bio` |
 | `example_defineAbioticKinetics.hh` | CompLaB, compiled in | the abiotic rate law, off in this example |
+| `example_reaction.json` | `prt_core/reactions.py`, and every script that takes `--reaction` | a chemistry that is not in the registry, written as a table entry |
 
 ## The settings file
 
@@ -51,6 +52,29 @@ chemicals in it.
 The numbers in the demo campaign these came from are constructed rather than
 simulated. The input files themselves are not: they are what a real run of
 this chemistry would be given.
+
+## The reaction file
+
+A reaction is a list of chemicals, a list of dimensionless numbers with the
+ranges they were trained over, and whether the problem is steady or transient.
+It is data, so a chemistry that is not in the registry needs a file rather than
+a new script:
+
+```bash
+python model/train.py --data dataset.h5 --out runs/C --species C \
+                      --reaction examples/example_reaction.json
+```
+
+Anything that takes `--reaction` takes a path as readily as a registry key, and
+a CompLaB settings XML works too, since its `<name_of_substrates>` already names
+the chemicals.
+
+What the file buys is not a shape. The widths come from the dataset either way.
+It is what the checkpoint then RECORDS: name the wrong chemistry and a model
+fitted on one reaction loads into a run predicting another, every shape agrees,
+nothing is raised, and the field is merely wrong. The parameter ranges do the
+same job at prediction time, turning a value outside them into a reported
+extrapolation.
 
 ## Nothing here is needed for the flow capability
 
