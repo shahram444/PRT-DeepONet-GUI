@@ -47,6 +47,8 @@ import glob
 import hashlib
 import json
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import sys
 
@@ -1670,6 +1672,21 @@ def main():
         h.attrs["source"] = b"collected by collect_foreign_complab.py"
         h.attrs["velocity_magnitude_only_runs"] = int(
             sum(1 for r in recs if r["vmag_only"]))
+
+        # ---- the documented layout, in one place -------------------------
+        # Three collectors write this file and each used to decide the layout
+        # for itself, which is how they drifted apart. dataset_schema holds
+        # the layout now, and fills in anything derivable that is still
+        # missing. An entry a campaign genuinely does not have is recorded in
+        # ancillary/absent with its reason rather than filled with zeros.
+        try:
+            import dataset_schema
+            dataset_schema.finalise(h)
+        except ImportError:
+            print("   note: dataset_schema.py not beside this script, so the "
+                  "file was written without the final layout pass. Run "
+                  "dataset_schema.py upgrade on it to bring it up.")
+
 
     print("\nwrote %s" % outp)
     print("   %d run(s) over %d distinct rock(s), %d chemical(s), %d snapshot(s)"

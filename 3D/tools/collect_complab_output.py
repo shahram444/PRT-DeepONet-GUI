@@ -44,17 +44,33 @@ rejection is recorded with a specific reason:
 
 HDF5 layout
 -----------
-    /geom/gid          (G,)   int32     geometry id
+    /geom/gid          (G,)   int32     pore space id, as the campaign numbered it
     /geom/material     (G,nx,ny,nz) uint8    0 solid, 1 wall, 2 pore
     /geom/gdf          (G,nx,ny,nz) float32  geodesic distance from inlet
     /geom/edt          (G,nx,ny,nz) float32  Euclidean distance (ablation control)
+    /geom/mis,uprm,dw2 (G,nx,ny,nz) float32  pore size maps, for switch D
     /samples/geom_index(S,)   int32     row into /geom
     /samples/run_id    (S,)   int32
-    /samples/params    (S,6)  float32   pe, da_bio, da_abio, ks_ac, ks_a, Y
+    /samples/params    (S,P)  float32   pe, da  (or the six-column layout)
     /samples/t_norm    (S,T)  float32   normalised snapshot times
-    /samples/conc      (S,T,C,nx,ny,nz) float16
-    /samples/velocity  (S,3,nx,ny,nz)   float16   (omit with --no-velocity)
-    attrs: species=['Ac','A','P','Bio'], param_names=[...], conc_scale=(C,)
+    /samples/t_seconds (S,T)  float64   the same times in seconds
+    /samples/wall_s    (S,)   float32   how long each run took
+    /samples/conc      (S,T,C,nx,ny,nz) float16  divided by conc_scale
+    /samples/rate      (S,T,C,nx,ny,nz) float16  divided by rate_scale
+    /samples/velocity  (S,3,nx,ny,nz)   float16  (omit with --no-velocity)
+    /inputs/xml        (S,)   text      each run's CompLaB.xml, verbatim
+    /inputs/env        (S,)   text      each run's env.sh, verbatim
+    /inputs/params_json(S,)   text      each run's params.json, verbatim
+    /inputs/settings_names  (K,)  text  the xml tags common to every run
+    /inputs/settings_values (S,K) text  their values, one row per run
+    /inputs/kinetics        (2,)  text  the rate law headers, with --kinetics
+    /inputs/kinetics_sha256 (2,)  text
+    /inputs/campaign_json, runs_csv, calibration_json   the campaign's own files
+    /ancillary/run_name (S,)  text      the directory each row came from
+    attrs: species, species_role, param_names, param_units, param_layout,
+           da_column, mode, shape, spacing, spacing_unit, reaction, boundaries,
+           n_samples, n_geometries, n_times, structure_evolves
+    /samples attrs: conc_scale (C,), rate_scale (C,)
 """
 
 import argparse, base64, csv, json, os, re, struct, sys, zlib
@@ -278,7 +294,7 @@ def _pick_scalar(arrs, species_name, shape):
 
 
 def load_run(rdir, species, microbes, shape, mode, want_velocity, max_conc,
-             n_times=None):
+             n_times=None, want_rate=True):
     """Returns (conc (T,C,nx,ny,nz) float32, t_norm (T,), velocity or None) or
     raises ValueError with a specific, reportable reason.
 
@@ -350,6 +366,8 @@ def load_run(rdir, species, microbes, shape, mode, want_velocity, max_conc,
         idx = [int(np.abs(have - w).argmin()) for w in want]   # nearest snapshot
         t_norm = want.astype(np.float32)
 
+    picked_iters = [iters[k] for k in idx]
+
     conc = np.zeros((len(idx), len(fields)) + shape, np.float32)
     for ci, nm in enumerate(fields):
         for ti, k in enumerate(idx):
@@ -377,6 +395,50 @@ def load_run(rdir, species, microbes, shape, mode, want_velocity, max_conc,
     frac_neg = float((conc < -1e-12).mean())
     if frac_neg > 0.05:
         raise ValueError("%.1f%% of voxels negative (unstable kinetics)" % (100 * frac_neg))
+
+    # THE REACTION RATE THE SOLVER ITSELF COMPUTED.
+    #
+    # Written as rate_<species>_*.vti beside the concentrations, one file per
+    # chemical per stored time, holding an array called 'Rate'. It is the only
+    # quantity in the campaign that cannot be recovered from what is already
+    # stored: a rate recomputed afterwards from the concentrations is the rate
+    # law as the READER understands it, evaluated on fields that have been
+    # rounded to half precision, and comparing that against a prediction
+    # measures the reader as much as the model. The solver's own rate does not.
+    #
+    # Read on exactly the same time axis as the concentrations, so rate[t] and
+    # conc[t] are the same instant. A run without rate files is not a failure;
+    # the array is simply absent from the file.
+    rate = None
+    if want_rate:
+        per_r = OrderedDict()
+        for i, nm in enumerate(fields):
+            for cand in ("rate_%s" % nm, "rate%d" % i, "Rate_%s" % nm):
+                sr = snapshots(od, cand)
+                if sr:
+                    per_r[nm] = sr
+                    break
+        if len(per_r) == len(fields) and all(
+                len(v) >= ntimes for v in per_r.values()):
+            rate = np.zeros((len(idx), len(fields)) + shape, np.float32)
+            for ci, nm in enumerate(fields):
+                for ti, k in enumerate(idx):
+                    arrs, _ = read_vti(per_r[nm][k][1])
+                    a = None
+                    for key in ("Rate", "rate", nm):
+                        if key in arrs and arrs[key].shape == shape:
+                            a = arrs[key]
+                            break
+                    if a is None:
+                        cands = [v for v in arrs.values() if v.shape == shape]
+                        a = cands[0] if len(cands) == 1 else None
+                    if a is None:
+                        raise ValueError(
+                            "no usable rate array in %s"
+                            % os.path.basename(per_r[nm][k][1]))
+                    rate[ti, ci] = a
+            if not np.all(np.isfinite(rate)):
+                raise ValueError("non-finite values in the reaction rate fields")
 
     vel = None
     vel_is_magnitude_only = False
@@ -410,7 +472,21 @@ def load_run(rdir, species, microbes, shape, mode, want_velocity, max_conc,
                 vel = np.zeros((3,) + shape, np.float32)
                 vel[0] = arrs["velocityNorm"]
                 vel_is_magnitude_only = True
-    return conc, t_norm, vel, vel_is_magnitude_only
+    return conc, t_norm, vel, vel_is_magnitude_only, rate, picked_iters
+
+
+def _near(value, wanted, rtol=1e-6):
+    """Is this Peclet number one of the requested ones.
+
+    A float typed on a command line and a float read out of params.json are not
+    required to be the same bits, so this compares with a relative tolerance
+    rather than with ==, which would silently exclude everything.
+    """
+    if value is None:
+        return False
+    v = float(value)
+    return any(abs(v - float(w)) <= rtol * max(abs(v), abs(float(w)), 1e-30)
+               for w in wanted)
 
 
 def main():
@@ -423,6 +499,26 @@ def main():
     p.add_argument("--geometries", required=True)
     p.add_argument("--out", default="./dataset")
     add_param_layout_argument(p)
+    # ---- excluding a corner of the parameter space -------------------------
+    # A campaign can contain a corner that ran to completion and is still not
+    # usable, which is not the same thing as a run that failed. The one this
+    # exists for is a Peclet number high enough that the cell Peclet number in
+    # the narrow throats approaches one: the advection scheme then oscillates,
+    # and with a positivity clamp in the solver the negative half of each
+    # oscillation is removed, so the error accumulates as mass instead of
+    # cancelling and the field exceeds the feed concentration. Nothing in the
+    # per-run checks catches that, because each field on its own is finite,
+    # positive and the right shape.
+    #
+    # Selecting by Peclet number rather than by run id keeps the choice
+    # readable in the report and independent of how the campaign was indexed.
+    p.add_argument("--keep-pe", type=float, nargs="+", default=None, metavar="PE",
+                   help="keep ONLY runs at these Peclet numbers, and record every "
+                        "other run as excluded. Matched with a relative tolerance, "
+                        "so --keep-pe 0.02 0.2 does the obvious thing.")
+    p.add_argument("--drop-pe", type=float, nargs="+", default=None, metavar="PE",
+                   help="the complement of --keep-pe: exclude runs at these "
+                        "Peclet numbers and keep the rest.")
     p.add_argument("--mode", choices=["steady", "transient"], default="steady",
                    help="steady: the final snapshot only (T=1). transient: a time "
                         "series, which is what makes the trunk's t input mean "
@@ -442,7 +538,27 @@ def main():
     p.add_argument("--max-conc", type=float, default=1.0,
                    help="reject a run whose max concentration exceeds this (mol/L)")
     p.add_argument("--compress", default="gzip", choices=["gzip", "lzf", "none"])
+    # ---- the complete record ----------------------------------------------
+    # A dataset that holds only the fields is enough to fit a model and not
+    # enough to say what was fitted. These carry the rest: what each run was
+    # told to do, and what the solver reported back.
+    p.add_argument("--no-rate", action="store_true",
+                   help="skip the reaction rate volumes. They are the same size "
+                        "as the concentrations, and they are the only output "
+                        "that cannot be recovered from what is already stored.")
+    p.add_argument("--kinetics", nargs="+", default=None, metavar="FILE",
+                   help="the rate law headers the solver was BUILT with, stored "
+                        "verbatim with their sha256. They are compiled into the "
+                        "binary, so they are not in the campaign directory and "
+                        "have to be named. Without them the file records the "
+                        "chemistry only as the xml describes it.")
+    p.add_argument("--note", default="", metavar="TEXT",
+                   help="free text about this collection, stored on the file")
     args = p.parse_args()
+    if args.keep_pe and args.drop_pe:
+        sys.exit("--keep-pe and --drop-pe are two ways of saying the same thing. "
+                 "Give one of them.")
+    keep_pe, drop_pe = args.keep_pe, args.drop_pe
 
     import h5py
     os.makedirs(args.out, exist_ok=True)
@@ -493,6 +609,21 @@ def main():
                                  reason=st.get("reason") or "marked failed",
                                  exit_code=st.get("exit_code"), wall_s=st.get("wall_s")))
             continue
+        # ---- the requested corner of the parameter space ----------------------
+        # A run excluded here is recorded like any other exclusion, under its own
+        # stage, so campaign_report.md still accounts for every run that was
+        # built. It is NOT a failure: the run is fine, it is simply outside the
+        # range this dataset is meant to cover. See --keep-pe.
+        if keep_pe is not None and not _near(pr.get("pe"), keep_pe):
+            failures.append(dict(run=d, gid=pr["gid"], stage="excluded",
+                                 reason="Peclet %g is not among the requested %s"
+                                        % (pr.get("pe"), keep_pe)))
+            continue
+        if drop_pe and _near(pr.get("pe"), drop_pe):
+            failures.append(dict(run=d, gid=pr["gid"], stage="excluded",
+                                 reason="Peclet %g was excluded by --drop-pe"
+                                        % pr.get("pe")))
+            continue
         good.append((d, rd, pr, st))
 
     if not good:
@@ -522,9 +653,10 @@ def main():
     recs = []
     for d, rd, pr, st in good:
         try:
-            conc, tnorm, vel, vmag = load_run(rd, species, microbes, shape, args.mode,
-                                        not args.no_velocity, args.max_conc,
-                                        args.n_times)
+            conc, tnorm, vel, vmag, rate, piters = load_run(
+                rd, species, microbes, shape, args.mode,
+                not args.no_velocity, args.max_conc, args.n_times,
+                want_rate=not args.no_rate)
         except Exception as e:
             failures.append(dict(run=d, gid=pr["gid"], stage="data", reason=str(e),
                                  wall_s=st.get("wall_s")))
@@ -538,9 +670,17 @@ def main():
                                         "to put every run on one time axis"
                                         % (conc.shape[0], T)))
             continue
-        recs.append((d, pr, conc, tnorm, vel, vmag))
-        print("  %s  gid=%d  Pe=%.3g  Da_bio=%.3g  max=%.3g"
-              % (d, pr["gid"], pr["pe"], pr["da_bio"], float(conc.max())))
+        recs.append((d, pr, conc, tnorm, vel, vmag, rate, piters, rd, st))
+        # NAME THE DAMKOHLER THAT IS ACTUALLY BEING SWEPT. This printed
+        # Da_bio unconditionally, so an abiotic campaign got a column of zeros
+        # where the swept parameter should be, and the one number that varied
+        # between runs never appeared in the log at all. Report whichever of the
+        # two is non-zero, under its own name, which is also the one param_row
+        # puts in the single da column.
+        _dn, _dv = (("Da_bio", pr["da_bio"]) if float(pr.get("da_bio", 0.0))
+                    else ("Da_abio", pr.get("da_abio", 0.0)))
+        print("  %s  gid=%-3d Pe=%-6.3g %s=%-6.3g max=%.3g"
+              % (d, pr["gid"], pr["pe"], _dn, _dv, float(conc.max())))
 
     if not recs:
         _report(args, run_names, [], failures, None)
@@ -683,16 +823,198 @@ def main():
                 if r[4] is not None:
                     dv[i] = r[4].astype(np.float16)
 
+        # ---- the reaction rate the solver computed ------------------------
+        # Stored one channel per chemical, aligned with conc, because that is
+        # what the solver wrote and it needs no inference about which rates are
+        # the same reaction seen from different sides. Scaled the same way, so
+        # half precision costs the same three decimal digits it costs there;
+        # multiplying by rate_scale gives mol per litre per second back.
+        if any(r[6] is not None for r in recs):
+            rscale = np.full(C, 1e-30, np.float64)
+            for r in recs:
+                if r[6] is None:
+                    continue
+                for ci in range(C):
+                    rscale[ci] = max(rscale[ci], float(np.abs(r[6][:, ci]).max()))
+            rscale = rscale.astype(np.float32)
+            dr = sg.create_dataset("rate", shape=(S, T, C) + shape,
+                                   dtype=np.float16, compression=comp,
+                                   chunks=(1, 1, 1) + shape)
+            for i, r in enumerate(recs):
+                if r[6] is not None:
+                    dr[i] = (r[6] / rscale[None, :, None, None, None]).astype(np.float16)
+            sg.attrs["rate_scale"] = rscale
+            n_rate = sum(1 for r in recs if r[6] is not None)
+            if n_rate < len(recs):
+                print("\nWARNING: only %d of %d runs had rate volumes; the others "
+                      "hold zeros in /samples/rate." % (n_rate, len(recs)))
+
+        # ---- the same times in seconds, and how long each run took ---------
+        # t_norm is a fraction of each run's own approach to steady state,
+        # which is what the trunk needs and is not a time. The seconds are the
+        # iteration the volume was written at times the run's own timestep, so
+        # two runs can be compared as physics rather than as fractions.
+        dt = np.array([float(r[1].get("dt_s", np.nan)) for r in recs], np.float64)
+        ts = np.full((S, T), np.nan, np.float64)
+        for i, r in enumerate(recs):
+            if np.isfinite(dt[i]) and r[7] is not None and len(r[7]) == T:
+                ts[i] = np.asarray(r[7], np.float64) * dt[i]
+        if np.isfinite(ts).any():
+            sg.create_dataset("t_seconds", data=ts)
+        sg.create_dataset("wall_s", data=np.array(
+            [float(r[9].get("wall_s", np.nan)) for r in recs], np.float32))
+
+        # ===================================================================
+        #  WHAT EACH RUN WAS TOLD TO DO
+        # ===================================================================
+        # Verbatim, not parsed. A parsed copy is a reading of the input and
+        # goes out of date the moment the solver gains a setting this file does
+        # not know about; the text does not. The parsed table beside it is a
+        # convenience for the settings that are actually present, and it is
+        # derived from the same text, so the two cannot disagree.
+        vlen = h5py.string_dtype(encoding="utf-8")
+        ig = h.create_group("inputs")
+
+        def read_text(path):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    return f.read()
+            except Exception:                                      # noqa: BLE001
+                return ""
+
+        for name, fn in (("xml", "CompLaB.xml"),
+                         ("env", "env.sh"),
+                         ("params_json", "params.json")):
+            texts = [read_text(os.path.join(r[8], fn)) for r in recs]
+            if any(texts):
+                d = ig.create_dataset(name, data=np.array(texts, dtype=object),
+                                      dtype=vlen)
+                d.attrs["source"] = fn
+                d.attrs["identical_for_every_run"] = bool(len(set(texts)) == 1)
+
+        # the settings that appear in every run's xml, as a table one row per run
+        try:
+            import xml.etree.ElementTree as ET
+            rows, keys = [], None
+            for r in recs:
+                t = read_text(os.path.join(r[8], "CompLaB.xml"))
+                flat = {}
+                if t.strip():
+                    for el in ET.fromstring(t).iter():
+                        if len(el) == 0 and el.text and el.text.strip():
+                            flat[el.tag] = el.text.strip()
+                rows.append(flat)
+                keys = set(flat) if keys is None else (keys & set(flat))
+            keys = sorted(keys or [])
+            if keys:
+                ig.create_dataset("settings_names",
+                                  data=np.array(keys, dtype=object), dtype=vlen)
+                ig.create_dataset(
+                    "settings_values",
+                    data=np.array([[row.get(k, "") for k in keys] for row in rows],
+                                  dtype=object), dtype=vlen)
+        except Exception as e:                                     # noqa: BLE001
+            print("  NOTE: the xml settings table was not written (%s). The xml "
+                  "itself is stored verbatim either way." % e)
+
+        # the rate law headers the binary was BUILT with
+        if args.kinetics:
+            import hashlib
+            names, texts, shas = [], [], []
+            for f in args.kinetics:
+                t = read_text(f)
+                if not t:
+                    print("  NOTE: %s could not be read and was not stored." % f)
+                    continue
+                names.append(os.path.basename(f))
+                texts.append(t)
+                shas.append(hashlib.sha256(t.encode("utf-8")).hexdigest())
+            if texts:
+                ig.create_dataset("kinetics_name",
+                                  data=np.array(names, dtype=object), dtype=vlen)
+                ig.create_dataset("kinetics",
+                                  data=np.array(texts, dtype=object), dtype=vlen)
+                ig.create_dataset("kinetics_sha256",
+                                  data=np.array(shas, dtype=object), dtype=vlen)
+                ig["kinetics"].attrs["note"] = (
+                    "compiled into the solver, so not part of the campaign "
+                    "directory. The abiotic header reads its rate constant, its "
+                    "timestep and its per-step cap from the environment, so it "
+                    "does not pin the chemistry down on its own: inputs/env "
+                    "holds what each run was given.")
+
+        # the campaign's own definition of itself
+        for name, fn in (("campaign_json", "campaign.json"),
+                         ("runs_csv", "runs.csv"),
+                         ("calibration_json", "calibration.json")):
+            for c in camps:
+                t = read_text(os.path.join(c, fn))
+                if t:
+                    ig.create_dataset(name, data=np.array([t], dtype=object),
+                                      dtype=vlen)
+                    break
+
+        # ---- free text ----------------------------------------------------
+        ag = h.create_group("ancillary")
+        ag.create_dataset("run_name", data=np.array([r[0] for r in recs],
+                                                    dtype=object), dtype=vlen)
+        ag["run_name"].attrs["note"] = "the run directory each row was read from"
+        if args.note:
+            ag.attrs["dataset_note"] = args.note
+
+        # ===================================================================
+        #  THE LABELS
+        # ===================================================================
         sg.attrs["conc_scale"] = scale
         h.attrs["species"] = np.array(fields, dtype="S8")
+        # dissolved or microbe, because the two are transported differently and
+        # the names alone do not say which is which
+        h.attrs["species_role"] = np.array(
+            ["dissolved"] * len(species) + ["microbe"] * len(microbes), dtype="S12")
         h.attrs["param_names"] = np.array(pnames, dtype="S16")
+        # Peclet and Damkohler are ratios; the half saturation constants and the
+        # yield are already divided by an inlet concentration. All of them are
+        # dimensionless, and saying so is not the same as leaving it unsaid.
+        h.attrs["param_units"] = np.array(["1"] * len(pnames), dtype="S12")
         write_param_layout_attrs(h, args.params, _biotic)
         h.attrs["mode"] = args.mode
         h.attrs["shape"] = np.array(shape, np.int32)
         h.attrs["n_samples"] = S
         h.attrs["n_geometries"] = G
+        h.attrs["n_times"] = T
         h.attrs["velocity_magnitude_only_runs"] = int(
             sum(1 for r in recs if len(r) > 5 and r[5]))
+
+        # the voxel size, taken from the runs rather than assumed
+        _dx = {float(r[1]["dx_um"]) for r in recs if "dx_um" in r[1]}
+        if len(_dx) == 1:
+            h.attrs["spacing"] = np.array([_dx.pop()] * 3, np.float64)
+            h.attrs["spacing_unit"] = "um"
+        # what the run was told the chemistry is, in its own words
+        for key, src in (("reaction", "reaction"), ("boundaries", "boundaries")):
+            vals = {str(r[1][src]) for r in recs if src in r[1]}
+            if len(vals) == 1:
+                h.attrs[key] = vals.pop()
+        # did the pore space move. A campaign that dissolves or precipitates
+        # writes a mask per stored time; a rigid one writes it once.
+        h.attrs["structure_evolves"] = bool(
+            max(len(snapshots(os.path.join(r[8], "output"), "maskLattice"))
+                for r in recs) > 1)
+
+        # ---- the documented layout, in one place -------------------------
+        # Three collectors write this file and each used to decide the layout
+        # for itself, which is how they drifted apart. dataset_schema holds
+        # the layout now, and fills in anything derivable that is still
+        # missing. An entry a campaign genuinely does not have is recorded in
+        # ancillary/absent with its reason rather than filled with zeros.
+        try:
+            import dataset_schema
+            dataset_schema.finalise(h)
+        except ImportError:
+            print("   note: dataset_schema.py not beside this script, so the "
+                  "file was written without the final layout pass. Run "
+                  "dataset_schema.py upgrade on it to bring it up.")
+
 
     _report(args, run_names, recs, failures, (h5p, S, G, T, C, shape))
 
@@ -704,11 +1026,24 @@ def _report(args, run_names, recs, failures, ds):
         with open(fcsv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(failures)
 
+    # A run excluded by --keep-pe or --drop-pe did not fail, so it is counted
+    # apart from the failures and the yield is quoted against the runs that were
+    # actually asked for. Quoting one number for both would make a deliberate
+    # restriction of the parameter space look like a bad campaign.
+    n_excl = sum(1 for f in failures if f.get("stage") == "excluded")
+    n_fail = len(failures) - n_excl
+    n_asked = len(run_names) - n_excl
+
     L = []
     L.append("# Campaign report\n")
-    L.append("Total runs built: **%d**  |  usable: **%d**  |  failed: **%d**  (%.1f%% yield)\n"
-             % (len(run_names), len(recs), len(failures),
-                100.0 * len(recs) / max(len(run_names), 1)))
+    L.append("Total runs built: **%d**  |  requested: **%d**  |  usable: **%d**  "
+             "|  failed: **%d**  (%.1f%% yield)\n"
+             % (len(run_names), n_asked, len(recs), n_fail,
+                100.0 * len(recs) / max(n_asked, 1)))
+    if n_excl:
+        L.append("\n**%d run(s) were excluded by request**, not by failure. They are "
+                 "listed below under stage `excluded` and are absent from the "
+                 "dataset by choice.\n" % n_excl)
     if ds:
         h5p, S, G, T, C, shape = ds
         sz = os.path.getsize(h5p) / 1e9

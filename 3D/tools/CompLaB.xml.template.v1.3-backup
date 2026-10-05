@@ -4,20 +4,6 @@
      Rendered by campaign.py.  Do not edit a rendered copy; edit the template.
      Run @RUN_ID@ : geometry @GID@ , Pe=@PE@ , Da_bio=@DA_BIO@ , Da_abio=@DA_ABIO@
      =========================================================================
-     TARGETS CompLaB3D v1.3.2.  Two things that version changed and this file
-     depends on:
-       * update_rxnLattices and update_abiotic_rxnLattices now clamp every
-         reaction increment against the amount present, so a high-Damkohler run
-         can no longer drive a species negative. Before that, the high-Da half of
-         a sweep was produced negative and then dropped by
-         collect_complab_output.py's "more than 5% negative voxels" filter,
-         silently, into failures.csv. Check the [CLAMP] line in run.log, or run
-         tools/batch_preflight.py clamp over the finished campaign.
-       * <abiotic_rate_scale> exists and is pinned below.
-     The output contract is UNCHANGED: subsLattice<n>_<7 digits>.vti,
-     bioLattice<n>_<7 digits>.vti and nsLattice_<7 digits>.vti, each carrying a
-     scalar named Density, which is exactly what collect_complab_output.py reads.
-     =========================================================================
      WHAT CHANGED FROM T9, AND WHY (verified against the source)
        1. <material_numbers> has NO <microbe0>.  That absence is THE switch:
           complab_functions.hh:965-978 sets bmass_type=1 (biofilm) when the tag
@@ -58,17 +44,6 @@
         <biotic_mode>true</biotic_mode>
         <enable_kinetics>true</enable_kinetics>
         <enable_abiotic_kinetics>true</enable_abiotic_kinetics>
-        <!-- [v1.3.2] PINNED AT 1.0 ON PURPOSE. CompLaB3D v1.3.2 added
-             <abiotic_rate_scale>, an XML multiplier on everything
-             defineAbioticRxnKinetics() returns. This campaign sets the abiotic
-             rate through PRT_KSURF in env.sh instead, and the two are two ways to
-             set one number: leaving both free multiplies the rate twice and the
-             Damkohler recorded in params.json is then not the Damkohler that ran.
-             Pinning it here makes that impossible rather than merely unlikely, and
-             tools/batch_preflight.py refuses a campaign where both are set.
-             The startup banner reports Da_r from the rate law's ACTUAL output with
-             this scale already applied, so check it on the first run. -->
-        <abiotic_rate_scale>1.0</abiotic_rate_scale>
         <enable_validation_diagnostics>false</enable_validation_diagnostics>
     </simulation_mode>
 
