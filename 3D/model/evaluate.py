@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-evaluate.py — held-out accuracy and the paper's figures.
+evaluate.py, held-out accuracy and the paper's figures.
 
     # one model
     python evaluate.py --checkpoint ../runs/gdf/best.pt \
@@ -159,6 +159,14 @@ def run_one(ckpt, args, device, tag, save_fields=0):
     model, _ = load_model(ckpt, ds, device)
     species = ds.target_species
 
+    # WHICH FIELDS GET A PICTURE. The dataset is ordered (sample, snapshot), so
+    # taking the first N gave N snapshots of ONE run, all at the earliest times,
+    # where a product species is still empty everywhere. Every saved figure was
+    # then a picture of nothing. Spread them over the whole held-out set instead,
+    # so they land on different pore spaces, different conditions and late times.
+    pick = (set(np.linspace(0, len(ds) - 1, save_fields).round().astype(int).tolist())
+            if save_fields else set())
+
     rows, t_inf = [], 0.0
     for k in range(len(ds)):
         b1, b2, tk, y = ds[k]
@@ -190,14 +198,14 @@ def run_one(ckpt, args, device, tag, save_fields=0):
                          rmse=float(np.sqrt(se)), r2=r2,
                          rmse_mean=float(np.sqrt(se)),
                          **{n: float(v) for n, v in zip(ds.param_names, ds.params[s])}))
-        if save_fields and k < save_fields:
+        if k in pick:
             # take the voxel indices from the pore list, NOT from trunk columns
             # 0-2: with --dim-free the trunk is (t, dwall, tau) and carries no
             # Cartesian coordinates at all
             pts = ds.pore_idx[int(ds.geom_index[s])].astype(int)
             truth_v = scatter_to_volume(t, pts, ds.shape)
             pred_v = scatter_to_volume(p, pts, ds.shape)
-            _field_fig(truth_v, pred_v, species, rows[-1],
+            _field_fig(truth_v, pred_v, species, rows[-1], ds.param_names,
                        os.path.join(args.out, "fields_%s_%02d.png" % (tag, k)))
             g = int(ds.geom_index[s])
             material = ds.h["geom/material"][g]
@@ -330,7 +338,7 @@ def _time_grid(material, rows, ts, path, title):
 
 def _physics_fig(material, velfield, truth, pred, species, params, param_names,
                  meta, stem, do_3d=True):
-    """FLOW, BIOTIC rate, ABIOTIC rate — truth against prediction, 2D and 3D.
+    """FLOW, BIOTIC rate, ABIOTIC rate, truth against prediction, 2D and 3D.
 
     The concentrations are what the network emits; the rate fields are what a
     reactive-transport reader wants to look at. Both are derived here with the
@@ -413,7 +421,7 @@ def _conditions(meta, param_names):
     return "  ".join(out)
 
 
-def _field_fig(truth, pred, species, meta, path):
+def _field_fig(truth, pred, species, meta, param_names, path):
     """Truth, prediction and absolute error of the ONE predicted field."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -430,10 +438,12 @@ def _field_fig(truth, pred, species, meta, path):
         fig.colorbar(im, ax=ax[c], fraction=.046)
         ax[c].set_title("%s, %s" % (species, lab), fontsize=10)
         ax[c].set_xticks([]); ax[c].set_yticks([])
-    fig.suptitle("held-out sample %d   t=%.2f   Pe=%.3g  Da_bio=%.3g  Da_abio=%.3g"
-                 "   mean RMSE=%.4f"
-                 % (meta["sample"], meta.get("t_norm", 1.0), _p(meta, "pe"),
-                    _p(meta, "da_bio"), _p(meta, "da_abio"),
+    # Name the columns the DATASET has. Hard-coding Da_bio and Da_abio printed
+    # "Da_bio=0  Da_abio=0" on every figure from a two-column (pe, da) file,
+    # so a figure of a run at Da 0.1 was captioned as a run at Da 0.
+    fig.suptitle("held-out sample %d   t=%.2f   %s   mean RMSE=%.4f"
+                 % (meta["sample"], meta.get("t_norm", 1.0),
+                    _conditions(meta, param_names),
                     meta["rmse_mean"]), fontsize=12)
     fig.tight_layout(); fig.savefig(path, dpi=110, bbox_inches="tight"); plt.close(fig)
 

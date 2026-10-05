@@ -56,7 +56,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from dataset_reader import (PRT3DDataset, split_by_geometry,        # noqa: E402
-                            split_three_ways,
+                            split_three_ways, indices_for_geometries,
                             resolve_switches)
 from deeponet_model import PRT_DeepONet3D, count_parameters              # noqa: E402
 from prt_core import conventions, reactions                              # noqa: E402
@@ -89,6 +89,75 @@ def reaction_agreement(r, ds):
         said.append("%s is a steady state and this dataset has a time column"
                     % r.key)
     return said
+
+
+def _read_split_file(path, h5path):
+    """Three disjoint lists of geometry ids, checked against the dataset.
+
+    Every way this can be wrong is caught here and named, because each of them
+    otherwise produces a run that trains happily and reports a number that means
+    something other than what it says: a geometry in two sets inflates the score,
+    a geometry in none is silently unused, and an id the file does not hold makes
+    a set smaller than intended without saying so.
+    """
+    import h5py
+    with open(path) as f:
+        raw = json.load(f)
+    if "split_geometries" in raw:        # a checkpoint summary was handed over
+        raw = raw["split_geometries"]
+    missing = [k for k in ("train", "val", "test") if k not in raw]
+    if missing:
+        raise SystemExit(
+            "%s has no %s entry. The file is "
+            '{"train": [...], "val": [...], "test": [...]} of geometry ids.'
+            % (path, " or ".join(missing)))
+
+    ids = {k: [int(v) for v in raw[k]] for k in ("train", "val", "test")}
+    for k, v in ids.items():
+        if not v:
+            raise SystemExit("the %s set in %s is empty" % (k, path))
+        if len(set(v)) != len(v):
+            raise SystemExit("the %s set in %s repeats a geometry id" % (k, path))
+    for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
+        both = sorted(set(ids[a]) & set(ids[b]))
+        if both:
+            raise SystemExit(
+                "geometries %s are in both the %s and the %s set in %s. The "
+                "three sets have to be disjoint, or the reported score is not "
+                "held out." % (both, a, b, path))
+
+    with h5py.File(h5path, "r") as h:
+        present = set(int(v) for v in np.unique(h["samples/geom_index"][:]))
+        gid = h["geom/gid"][:] if "gid" in h["geom"] else None
+    asked = set(ids["train"]) | set(ids["val"]) | set(ids["test"])
+    # geom_index is a ROW into /geom, and /geom/gid is the campaign's own id for
+    # that row. They coincide when every geometry of the campaign is in the file
+    # and diverge as soon as one is missing, which is exactly what happens after
+    # a corner of the parameter space has been excluded. Accept the campaign's
+    # ids, which is what a design is written in, and translate.
+    if gid is not None and not asked <= present:
+        by_gid = {int(g): i for i, g in enumerate(gid)}
+        unknown = sorted(a for a in asked if a not in by_gid)
+        if unknown:
+            raise SystemExit(
+                "%s names geometries %s, and this dataset holds %s. Either the "
+                "split file is for another campaign, or those geometries were "
+                "excluded when the dataset was collected."
+                % (path, unknown, sorted(by_gid)))
+        ids = {k: [by_gid[v] for v in vs] for k, vs in ids.items()}
+        asked = set(ids["train"]) | set(ids["val"]) | set(ids["test"])
+        print("split       : campaign geometry ids translated to dataset rows")
+
+    unknown = sorted(asked - present)
+    if unknown:
+        raise SystemExit(
+            "%s names geometries %s that carry no runs in this dataset."
+            % (path, unknown))
+    unused = sorted(present - asked)
+    if unused:
+        print("split       : NOTE %d geometry(ies) in the dataset are in no set "
+              "and will not be used: %s" % (len(unused), unused))
+    return ids
 
 
 def training_target_scale(h5path, train_idx, ds):
@@ -166,6 +235,14 @@ def main():
     # small to divide three ways, and says so in the output and the summary.
     ap.add_argument("--val-frac", type=float, default=0.15,
                     help="share of GEOMETRIES used to choose the checkpoint")
+    ap.add_argument("--split-file", default=None, metavar="JSON",
+                    help="use a DESIGNED split instead of drawing one. A JSON "
+                         "holding {\"train\": [...], \"val\": [...], \"test\": "
+                         "[...]} of geometry ids, which is the shape of the "
+                         "split_geometries entry in a checkpoint. Use this when "
+                         "the geometries are not interchangeable, for example "
+                         "when whole porosity levels are held out on purpose. "
+                         "Overrides --val-frac, --test-frac and --two-way-split.")
     ap.add_argument("--two-way-split", action="store_true",
                     help="one held-out set for both selection and reporting. "
                          "Only for a dataset with too few geometries to split "
@@ -281,7 +358,25 @@ def main():
     # geometry ids go into the checkpoint, so evaluate.py can reproduce the
     # test set instead of recomputing it from a fraction and a seed that may
     # have moved since.
-    if args.two_way_split:
+    if args.split_file:
+        # A SPLIT THAT WAS DESIGNED RATHER THAN DRAWN.
+        #
+        # split_three_ways permutes the geometry ids from a seed, which is the
+        # right default when the geometries are interchangeable. They are not
+        # always. A campaign built to ask whether the model interpolates across
+        # porosity holds out whole POROSITY LEVELS, so which geometry belongs to
+        # which set is a property of the design and no seed reproduces it.
+        #
+        # The file is {"train": [...], "val": [...], "test": [...]} of geometry
+        # ids, which is the same shape as the split_geometries entry already
+        # written into every checkpoint, so a split can be read back out of one
+        # model and handed to the next.
+        split_ids = _read_split_file(args.split_file, args.data)
+        tr_idx = indices_for_geometries(args.data, split_ids["train"])
+        va_idx = indices_for_geometries(args.data, split_ids["val"])
+        te_idx = indices_for_geometries(args.data, split_ids["test"])
+        print("split       : read from %s, not drawn from a seed" % args.split_file)
+    elif args.two_way_split:
         tr_idx, te_idx = split_by_geometry(args.data, frac=args.test_frac,
                                            seed=args.seed)
         va_idx = te_idx
@@ -546,7 +641,9 @@ def main():
                         # so evaluate.py scores on the same test rocks instead
                         # of recomputing a split from a fraction and a seed.
                         "split_geometries": split_ids,
-                        "split_kind": "two-way" if args.two_way_split else "three-way",
+                        "split_kind": ("designed" if args.split_file else
+                                      "two-way" if args.two_way_split
+                                      else "three-way"),
                         # AUDIT DATA-05 and DATA-04. The scalings the network
                         # was actually trained under, so evaluation and
                         # prediction reuse them rather than refitting.
@@ -568,7 +665,8 @@ def main():
     summary = dict(best_val_loss=best, species=train_ds.target_species,
                    reaction=reaction.key, distance_convention=convention,
                    rmse=rmse, rmse_mean=rmse, val_rmse=val_rmse,
-                   split_kind="two-way" if args.two_way_split else "three-way",
+                   split_kind=("designed" if args.split_file else
+                               "two-way" if args.two_way_split else "three-way"),
                    split_geometries=split_ids,
                    target_scale=(None if fitted_scale is None
                                  else fitted_scale.tolist()),
